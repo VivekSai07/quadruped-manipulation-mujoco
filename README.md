@@ -4,6 +4,10 @@ A MuJoCo simulation of a Unitree Go2 quadruped with a Franka Panda arm mounted o
 
 The robot walks to a table, lowers its stance to optimise arm workspace, reaches down to grasp a cube with the Panda arm, transports it to a placement plate, and returns the arm to home. The complete task runs in ~34 seconds of simulated time.
 
+## Demo
+
+https://github.com/VivekSai07/quadruped-manipulation-mujoco/raw/main/media/simulation_recording.mp4
+
 ---
 
 ## Architecture

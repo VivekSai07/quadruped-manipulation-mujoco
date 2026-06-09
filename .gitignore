@@ -11,10 +11,11 @@ build/
 # Test cache
 .pytest_cache/
 
-# Video recordings
+# Video recordings (except the demo in media/)
 *.mp4
 *.avi
 *.mkv
+!media/*.mp4
 
 # MuJoCo compiled model (regenerate with: python scripts/build_model.py)
 models/combined.xml

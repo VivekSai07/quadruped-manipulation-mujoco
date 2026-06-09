@@ -6,7 +6,8 @@ The robot walks to a table, lowers its stance to optimise arm workspace, reaches
 
 ## Demo
 
-https://github.com/VivekSai07/quadruped-manipulation-mujoco/raw/main/media/simulation_recording.mp4
+🎥 **Simulation Recording:**  
+[Watch the demo video](https://github.com/VivekSai07/quadruped-manipulation-mujoco/blob/main/media/simulation_recording.mp4)
 
 ---
 

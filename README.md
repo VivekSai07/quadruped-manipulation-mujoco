@@ -214,24 +214,3 @@ For the default scenario (cube 64 cm away, 5 cm below base): `alpha ≈ 0.24` �
 | `pytest` | any | Test suite |
 
 No ROS. No Unitree SDK. No external motion planners.
-
----
-
-## Archive
-
-The `archieve/` directory contains the full development lineage of the Franka Panda standalone simulation (before Go2 integration):
-
-- `m01` — basic position IK
-- `m02` — nullspace / velocity IK (the pattern used in this project)
-- `m03` — trajectory planning
-- `m04` — sense-plan-recover
-- `m05` — RRT path planning
-- `m06` — keyboard teleoperation
-- `m07` — machine vision integration
-- `m08` — autonomous obstacle avoidance
-- `m09` — YOLO object detection
-- `m10` — MoCap teleoperation
-- `m11` — VLM-guided pick-and-place
-- `m12` — Florence-2 integration
-- `m13` — reactive manipulation
-- `m14` — TAMP (Task and Motion Planning)

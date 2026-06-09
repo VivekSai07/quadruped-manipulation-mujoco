@@ -1,0 +1,48 @@
+simulation:
+  timestep: 0.005
+  model_path: "models/combined.xml"
+  max_duration: 150.0        # seconds (extended for adjusting_height + returning_home)
+
+go2:
+  # PD gains per joint type (FR/FL/RR/RL × hip_ab/hip/knee)
+  kp_hip:   60.0
+  kp_thigh: 80.0
+  kp_knee:  100.0
+  kd:       4.0
+  # Gait parameters
+  gait_period:   0.6    # seconds per full trot cycle
+  swing_height:  0.05   # meters max foot lift
+  stride_length: 0.10   # meters half-stride
+
+panda:
+  home_pose: [0.0, 0.0, 0.0, -1.5708, 0.0, 1.5708, -0.7853]
+  ik_iterations: 15
+  ik_step_size:  0.15
+  ik_damping:    0.01
+  ik_tolerance:  0.003
+
+task:
+  cube_pos:   [1.6, 0.0,  0.325]   # pickup cube center on worktable
+  target_pos: [1.6, 0.20, 0.331]   # cube center when resting on placement plate
+  stop_distance:     0.65           # meters XY to stop walking (clear of table legs)
+  stable_duration:   2.0            # seconds robot must stand before walking
+  stabilize_duration: 2.0           # seconds to pause after stopping before arm moves
+  height_settle_time: 2.0           # seconds for Go2 to settle at adjusted crouch height
+  approach_threshold: 0.05          # meters EE-to-hover-point to advance to next phase
+  descend_threshold:  0.025         # Z error (m) EE-to-cube/plate to close/open gripper
+  grasp_hold_duration: 3.0          # seconds to hold closed gripper before lifting
+  release_duration:   0.8           # seconds to hold open gripper before DONE
+  min_approach_time:  5.5           # arm travels ~48 cm at 10 cm/s = ~5 s minimum
+  min_descend_time:   2.0           # arm descends ~15 cm at 10 cm/s = ~1.5 s minimum
+  min_lift_time:      4.0           # min seconds in LIFTING (at 4cm/s → 15cm = 3.75s)
+  min_transport_time: 0.8           # min seconds in TRANSPORTING before checking threshold
+  min_lower_time:     4.0           # min seconds in LOWERING (at 4cm/s → 15cm = 3.75s)
+
+panda_mass_scale: 0.35      # Panda inertias scaled at model-build time
+
+# Visualization
+viewer:
+  camera_azimuth: -140.0
+  camera_elevation: -20.0
+  camera_distance: 3.5
+  status_interval: 0.5      # seconds between console status prints

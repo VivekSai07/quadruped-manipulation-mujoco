@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+
+# Test cache
+.pytest_cache/
+
+# Video recordings
+*.mp4
+*.avi
+*.mkv
+
+# MuJoCo compiled model (regenerate with: python scripts/build_model.py)
+models/combined.xml
+
+# Environment / secrets
+.env
+.env.*
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Graphify knowledge graph output
+graphify-out/
+
+# Jupyter
+.ipynb_checkpoints/

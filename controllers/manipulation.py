@@ -17,7 +17,9 @@ Joint layout in combined.xml actuators (indices 12-19):
   ctrl[16] → actuator5 → joint5   (forearm roll)
   ctrl[17] → actuator6 → joint6   (wrist pitch)
   ctrl[18] → actuator7 → joint7   (wrist roll)
-  ctrl[19] → actuator8 → gripper  (0=open, 255=closed)
+  ctrl[19] → actuator8 → gripper  (open/close values are end-effector-specific,
+                                    see controllers/end_effectors.py; 255=open/
+                                    0=closed for the default Franka gripper)
 """
 from __future__ import annotations
 
@@ -28,6 +30,7 @@ import mujoco
 import numpy as np
 
 from .base import BaseController
+from .end_effectors import DEFAULT_END_EFFECTOR, get_spec
 
 # Panda home pose: arm folded safely above robot
 _HOME_POSE = np.array([0.0, 0.0, 0.0, -1.5708, 0.0, 1.5708, -0.7853], dtype=np.float64)
@@ -61,7 +64,6 @@ _ARM_ACTUATOR_NAMES = [
     "actuator1", "actuator2", "actuator3", "actuator4",
     "actuator5", "actuator6", "actuator7",
 ]
-_GRIPPER_ACTUATOR = "actuator8"
 
 _ARM_JOINT_NAMES = [
     "joint1", "joint2", "joint3", "joint4",
@@ -77,10 +79,16 @@ class ManipulationController(BaseController):
     IK_DAMPING: float = 0.01      # Levenberg-Marquardt damping
     IK_TOLERANCE: float = 0.003   # 3 mm convergence threshold
 
-    def __init__(self, model: mujoco.MjModel, data: mujoco.MjData) -> None:
+    def __init__(
+        self,
+        model: mujoco.MjModel,
+        data: mujoco.MjData,
+        end_effector: str = DEFAULT_END_EFFECTOR,
+    ) -> None:
         super().__init__(model, data)
         self._q_target = _HOME_POSE.copy()
         self._gripper_open = True
+        self._ee_spec = get_spec(end_effector)
 
         # Cached IDs
         self._act_ids = [
@@ -88,7 +96,7 @@ class ManipulationController(BaseController):
             for n in _ARM_ACTUATOR_NAMES
         ]
         self._gripper_id = mujoco.mj_name2id(
-            model, mujoco.mjtObj.mjOBJ_ACTUATOR, _GRIPPER_ACTUATOR
+            model, mujoco.mjtObj.mjOBJ_ACTUATOR, self._ee_spec.actuator_name
         )
         self._jnt_qadr = [
             model.jnt_qposadr[mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, n)]
@@ -104,10 +112,10 @@ class ManipulationController(BaseController):
 
         # Body IDs for contact-based grasp detection (from archive GraspController)
         self._left_finger_id = mujoco.mj_name2id(
-            model, mujoco.mjtObj.mjOBJ_BODY, "panda_left_finger"
+            model, mujoco.mjtObj.mjOBJ_BODY, self._ee_spec.left_finger_body
         )
         self._right_finger_id = mujoco.mj_name2id(
-            model, mujoco.mjtObj.mjOBJ_BODY, "panda_right_finger"
+            model, mujoco.mjtObj.mjOBJ_BODY, self._ee_spec.right_finger_body
         )
         self._cube_body_id = mujoco.mj_name2id(
             model, mujoco.mjtObj.mjOBJ_BODY, "target_cube"
@@ -211,8 +219,10 @@ class ManipulationController(BaseController):
         # Arm: set ctrl to desired position (Panda actuators integrate PD internally)
         for i, aid in enumerate(self._act_ids):
             self.data.ctrl[aid] = float(self._q_target[i])
-        # Gripper: ctrl=255 → open (0.04 m gap), ctrl=0 → closed (spring pulls to 0)
-        self.data.ctrl[self._gripper_id] = 255.0 if self._gripper_open else 0.0
+        # Gripper: open/close ctrl values are end-effector-specific (see registry)
+        self.data.ctrl[self._gripper_id] = (
+            self._ee_spec.open_ctrl if self._gripper_open else self._ee_spec.close_ctrl
+        )
 
     # ── State queries ─────────────────────────────────────────────────────
 

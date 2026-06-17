@@ -17,6 +17,7 @@ The script:
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 import time
 from pathlib import Path
@@ -33,7 +34,20 @@ import yaml
 # Allow imports from project root
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from controllers.end_effectors import DEFAULT_END_EFFECTOR, END_EFFECTORS, get_spec
 from tasks.reach_task import ReachTask
+
+_STAMP_RE = re.compile(r"END_EFFECTOR_STAMP:\s*(\S+)")
+
+
+def _model_stamp(model_path: str) -> str | None:
+    """Return the end_effector name baked into models/combined.xml, or None
+    if the file is missing or has no stamp comment."""
+    path = Path(model_path)
+    if not path.exists():
+        return None
+    match = _STAMP_RE.search(path.read_text(encoding="utf-8"))
+    return match.group(1) if match else None
 
 
 def parse_args() -> argparse.Namespace:
@@ -53,6 +67,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--duration", type=float, default=None, help="Override max duration (s)")
     p.add_argument("--build-model", action="store_true",
                    help="Rebuild combined.xml before running")
+    p.add_argument("--end-effector", choices=sorted(END_EFFECTORS), default=DEFAULT_END_EFFECTOR,
+                   help=f"End-effector to mount on the Panda wrist (default: {DEFAULT_END_EFFECTOR})")
     return p.parse_args()
 
 
@@ -200,14 +216,16 @@ def main() -> int:
     args = parse_args()
     cfg = load_config(args.config)
 
-    # Optionally rebuild model XML
-    if args.build_model:
-        print("Rebuilding model...")
-        from scripts.build_model import main as build_main  # noqa: PLC0415
-        build_main()
-
     model_path = cfg["simulation"]["model_path"]
     max_duration = args.duration or cfg["simulation"].get("max_duration", 45.0)
+
+    # Rebuild model XML if explicitly requested, or if the cached model was
+    # built for a different end-effector (or doesn't exist / has no stamp).
+    current_stamp = _model_stamp(model_path)
+    if args.build_model or current_stamp != args.end_effector:
+        print(f"Rebuilding model for end-effector '{args.end_effector}'...")
+        from scripts.build_model import main as build_main  # noqa: PLC0415
+        build_main(end_effector=args.end_effector)
 
     print(f"Loading model: {model_path}")
     try:
@@ -227,10 +245,11 @@ def main() -> int:
     else:
         print("WARNING: 'home' keyframe not found -- using default pose")
 
-    task = ReachTask(model, data, cfg)
+    task = ReachTask(model, data, cfg, end_effector=args.end_effector)
 
     print(f"\n{'='*60}")
     print("Go2 + Franka Panda Loco-Manipulation Demo")
+    print(f"  End-effector: {get_spec(args.end_effector).display_name}")
     print(f"  Model: nq={model.nq}, nu={model.nu}, nbody={model.nbody}")
     print(f"  Total mass: {sum(model.body_mass):.2f} kg")
     print(f"  Task: Walk to cube at {cfg['task']['cube_pos']}, reach with arm")

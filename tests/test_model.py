@@ -10,6 +10,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from controllers.end_effectors import END_EFFECTORS, get_spec
+from scripts.build_model import build_combined_xml
+
 MODEL_PATH = str(Path(__file__).parent.parent / "models" / "combined.xml")
 
 
@@ -128,3 +131,68 @@ class TestKeyframeReset:
         mujoco.mj_resetDataKeyframe(model, data, kid)
         for _ in range(10):
             mujoco.mj_step(model, data)
+
+
+def _load_variant_model(name: str) -> tuple[mujoco.MjModel, str]:
+    """Build an end-effector variant and load it via a scratch file in
+    models/ so mesh paths (relative to that directory) still resolve --
+    from_xml_string has no file-path context for relative asset references.
+    """
+    xml = build_combined_xml(name)
+    models_dir = Path(__file__).parent.parent / "models"
+    scratch_path = models_dir / f"_test_scratch_{name}.xml"
+    scratch_path.write_text(xml, encoding="utf-8")
+    try:
+        model = mujoco.MjModel.from_xml_path(str(scratch_path))
+    finally:
+        scratch_path.unlink()
+    return model, xml
+
+
+@pytest.fixture(scope="module", params=sorted(END_EFFECTORS))
+def ee_variant_model(request) -> tuple[mujoco.MjModel, str, str]:
+    name = request.param
+    model, xml = _load_variant_model(name)
+    return model, name, xml
+
+
+class TestEndEffectorVariants:
+    def test_loads_without_error(self, ee_variant_model):
+        model, _name, _xml = ee_variant_model
+        assert model is not None
+
+    def test_ee_site_exists(self, ee_variant_model):
+        model, _name, _xml = ee_variant_model
+        sid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, "ee_site")
+        assert sid >= 0
+
+    def test_actuator_resolves(self, ee_variant_model):
+        model, name, _xml = ee_variant_model
+        spec = get_spec(name)
+        aid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, spec.actuator_name)
+        assert aid >= 0
+
+    def test_finger_bodies_resolve(self, ee_variant_model):
+        model, name, _xml = ee_variant_model
+        spec = get_spec(name)
+        left_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, spec.left_finger_body)
+        right_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, spec.right_finger_body)
+        assert left_id >= 0
+        assert right_id >= 0
+
+    def test_home_keyframe_exists(self, ee_variant_model):
+        model, _name, _xml = ee_variant_model
+        kid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_KEY, "home")
+        assert kid >= 0
+
+    def test_stamp_matches(self, ee_variant_model):
+        _model, name, xml = ee_variant_model
+        assert f"END_EFFECTOR_STAMP: {name}" in xml
+
+    def test_franka_nq_equals_35(self):
+        model, _xml = _load_variant_model("franka")
+        assert model.nq == 35
+
+    def test_robotiq_nq_equals_41(self):
+        model, _xml = _load_variant_model("robotiq_2f85")
+        assert model.nq == 41

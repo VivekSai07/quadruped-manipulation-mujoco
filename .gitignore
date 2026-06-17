@@ -39,3 +39,6 @@ graphify-out/
 
 # Jupyter
 .ipynb_checkpoints/
+
+archieve/
+docs/

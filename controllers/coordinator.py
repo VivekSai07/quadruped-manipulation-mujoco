@@ -35,6 +35,7 @@ from typing import Any
 import mujoco
 import numpy as np
 
+from .end_effectors import DEFAULT_END_EFFECTOR
 from .locomotion import GaitMode, LocomotionController
 from .manipulation import ManipulationController
 
@@ -83,6 +84,7 @@ class TaskCoordinator:
         model: mujoco.MjModel,
         data: mujoco.MjData,
         config: dict[str, Any],
+        end_effector: str = DEFAULT_END_EFFECTOR,
     ) -> None:
         self.model = model
         self.data  = data
@@ -92,7 +94,8 @@ class TaskCoordinator:
 
         # Sub-controllers
         self.loco  = LocomotionController(model, data)
-        self.manip = ManipulationController(model, data)
+        self.manip = ManipulationController(model, data, end_effector=end_effector)
+        self._ftp  = self.manip._ee_spec.ftp_offset
 
         # State machine
         self._state            = TaskState.INIT
@@ -161,12 +164,11 @@ class TaskCoordinator:
         cx, cy, cz = self._cube_pos
         tx, ty, tz = self._target_pos
         h = _HOVER_Z
-        _FTP = 0.015   # finger pad is ~1.5 cm above ee_site in vertical descent
         self._wp_approach  = np.array([cx, cy, cz + h])
-        self._wp_descend   = np.array([cx, cy, cz - _FTP])
+        self._wp_descend   = np.array([cx, cy, cz - self._ftp])
         self._wp_lift      = np.array([cx, cy, cz + h])
         self._wp_transport = np.array([tx, ty, tz + h])
-        self._wp_lower     = np.array([tx, ty, tz - _FTP])
+        self._wp_lower     = np.array([tx, ty, tz - self._ftp])
 
     # ── Smooth interp target ───────────────────────────────────────────────
 

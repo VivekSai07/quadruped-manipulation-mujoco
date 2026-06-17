@@ -12,6 +12,7 @@ import mujoco
 import numpy as np
 
 from controllers.coordinator import TaskCoordinator, TaskState
+from controllers.end_effectors import DEFAULT_END_EFFECTOR
 
 
 class ReachTask:
@@ -22,10 +23,11 @@ class ReachTask:
         model: mujoco.MjModel,
         data: mujoco.MjData,
         config: dict[str, Any],
+        end_effector: str = DEFAULT_END_EFFECTOR,
     ) -> None:
         self.model = model
         self.data = data
-        self.coordinator = TaskCoordinator(model, data, config)
+        self.coordinator = TaskCoordinator(model, data, config, end_effector=end_effector)
         self._status_interval = config.get("viewer", {}).get("status_interval", 0.5)
         self._last_status_t = -1.0
         self._success_time: float | None = None

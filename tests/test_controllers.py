@@ -10,10 +10,27 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from controllers.end_effectors import END_EFFECTORS
 from controllers.locomotion import GaitMode, LocomotionController
 from controllers.manipulation import ManipulationController
+from scripts.build_model import build_combined_xml
 
 MODEL_PATH = str(Path(__file__).parent.parent / "models" / "combined.xml")
+
+
+def _load_variant_model(name: str) -> mujoco.MjModel:
+    """Build an end-effector variant and load it via a scratch file in
+    models/ so mesh paths (relative to that directory) still resolve --
+    from_xml_string has no file-path context for relative asset references.
+    """
+    xml = build_combined_xml(name)
+    models_dir = Path(__file__).parent.parent / "models"
+    scratch_path = models_dir / f"_test_scratch_{name}.xml"
+    scratch_path.write_text(xml, encoding="utf-8")
+    try:
+        return mujoco.MjModel.from_xml_path(str(scratch_path))
+    finally:
+        scratch_path.unlink()
 
 
 @pytest.fixture(scope="module")
@@ -128,6 +145,41 @@ class TestManipulationController:
         manip = ManipulationController(m, d)
         q = manip.arm_qpos()
         assert q.shape == (7,)
+
+
+@pytest.fixture(scope="module", params=sorted(END_EFFECTORS))
+def ee_variant_model_data(request):
+    """Build (model, data, end_effector_name) for each variant."""
+    name = request.param
+    m = _load_variant_model(name)
+    d = mujoco.MjData(m)
+    kid = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_KEY, "home")
+    mujoco.mj_resetDataKeyframe(m, d, kid)
+    mujoco.mj_forward(m, d)
+    return m, d, name
+
+
+class TestManipulationControllerEndEffectors:
+    def test_constructs(self, ee_variant_model_data):
+        m, d, name = ee_variant_model_data
+        manip = ManipulationController(m, d, end_effector=name)
+        assert manip is not None
+
+    def test_ee_position_is_3d(self, ee_variant_model_data):
+        m, d, name = ee_variant_model_data
+        manip = ManipulationController(m, d, end_effector=name)
+        ee = manip.ee_position()
+        assert ee.shape == (3,)
+
+    def test_open_close_ctrl_differ(self, ee_variant_model_data):
+        m, d, name = ee_variant_model_data
+        manip = ManipulationController(m, d, end_effector=name)
+        assert manip._ee_spec.open_ctrl != manip._ee_spec.close_ctrl
+
+    def test_is_grasped_runs_at_home(self, ee_variant_model_data):
+        m, d, name = ee_variant_model_data
+        manip = ManipulationController(m, d, end_effector=name)
+        assert manip.is_grasped() in (True, False)
 
 
 class TestControllerIntegration:

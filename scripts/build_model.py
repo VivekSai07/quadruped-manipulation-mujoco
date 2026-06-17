@@ -12,10 +12,14 @@ Writes models/combined.xml.
 from __future__ import annotations
 
 import re
+import sys
 from pathlib import Path
 
 BASE_DIR = Path(__file__).parent.parent
 MODELS_DIR = BASE_DIR / "models"
+
+sys.path.insert(0, str(BASE_DIR))
+from controllers.end_effectors import EndEffectorSpec, get_spec, DEFAULT_END_EFFECTOR  # noqa: E402
 
 # Panda mass scale factor: reduces ~18.5 kg arm to ~6.5 kg
 PANDA_MASS_SCALE = 0.35
@@ -28,10 +32,318 @@ def _scale_inertia(value_str: str) -> str:
     return " ".join(scaled)
 
 
-def build_combined_xml() -> str:
-    """Return the complete combined MJCF XML as a string."""
+def _fmt(*vals: float) -> str:
+    """Format floats as a space-separated MJCF attribute string."""
+    return " ".join(f"{v:.10g}" for v in vals)
 
-    xml = """<mujoco model="go2_panda">
+
+def _franka_gripper_xml(spec: EndEffectorSpec) -> str:
+    """Franka stock two-finger gripper -- identical to the original literal block."""
+    return f"""                      <body name="panda_hand" pos="{_fmt(*spec.mount_pos)}" quat="{_fmt(*spec.mount_quat)}">
+                        <inertial mass="0.2555" pos="-0.01 0 0.03"
+                                  diaginertia="3.5e-4 8.75e-4 5.95e-4"/>
+                        <geom mesh="p_hand_0" material="p_off_white" class="panda_visual"/>
+                        <geom mesh="p_hand_1" material="p_dark"      class="panda_visual"/>
+                        <geom mesh="p_hand_2" material="p_dark"      class="panda_visual"/>
+                        <geom mesh="p_hand_3" material="white"        class="panda_visual"/>
+                        <geom mesh="p_hand_4" material="p_off_white" class="panda_visual"/>
+                        <geom mesh="p_hand_c" class="panda_collision"/>
+
+                        <!-- End-effector site: between fingertips -->
+                        <site name="ee_site" pos="{_fmt(*spec.ee_site_pos)}" size="0.01" rgba="0 1 0 0.5"/>
+
+                        <body name="panda_left_finger" pos="0 0 0.0584">
+                          <inertial mass="0.00525" pos="0 0 0"
+                                    diaginertia="8.313e-7 8.313e-7 2.625e-7"/>
+                          <joint name="finger_joint1" class="panda_finger"/>
+                          <geom mesh="p_finger_0" material="p_off_white" class="panda_visual"/>
+                          <geom mesh="p_finger_1" material="p_dark"      class="panda_visual"/>
+                          <geom mesh="p_finger_0" class="panda_collision"/>
+                          <geom class="ftp1"/>
+                          <geom class="ftp2"/>
+                          <geom class="ftp3"/>
+                          <geom class="ftp4"/>
+                          <geom class="ftp5"/>
+                        </body>
+
+                        <body name="panda_right_finger" pos="0 0 0.0584" quat="0 0 0 1">
+                          <inertial mass="0.00525" pos="0 0 0"
+                                    diaginertia="8.313e-7 8.313e-7 2.625e-7"/>
+                          <joint name="finger_joint2" class="panda_finger"/>
+                          <geom mesh="p_finger_0" material="p_off_white" class="panda_visual"/>
+                          <geom mesh="p_finger_1" material="p_dark"      class="panda_visual"/>
+                          <geom mesh="p_finger_0" class="panda_collision"/>
+                          <geom class="ftp1"/>
+                          <geom class="ftp2"/>
+                          <geom class="ftp3"/>
+                          <geom class="ftp4"/>
+                          <geom class="ftp5"/>
+                        </body>
+                      </body>"""
+
+
+def _robotiq_gripper_xml(spec: EndEffectorSpec) -> str:
+    """Robotiq 2F-85 adaptive gripper, ported from mujoco_menagerie's robotiq_2f85/2f85.xml.
+
+    Re-parented under panda_link7 at spec.mount_pos/mount_quat (replacing the
+    upstream model's own worldbody root). Masses/inertias scaled by spec.mass_scale
+    to match the Panda arm's payload-budget scaling. All names prefixed r2f85_ to
+    avoid collisions with existing Panda/Go2 asset and body names.
+    """
+    s = spec.mass_scale
+
+    def mass(value: float) -> str:
+        return f"{value * s:.6g}"
+
+    def di(*values: float) -> str:
+        return _scale_inertia(" ".join(str(v) for v in values))
+
+    return f"""                      <body name="r2f85_base_mount" pos="{_fmt(*spec.mount_pos)}" quat="{_fmt(*spec.mount_quat)}">
+                        <geom mesh="r2f85_base_mount" material="r2f85_black" class="r2f85_visual"/>
+                        <geom mesh="r2f85_base_mount" class="r2f85_collision"/>
+
+                        <!-- End-effector site: same convention as Franka's ee_site (direct
+                             child of the hand-equivalent body, so IK orientation tracking
+                             is unaffected by which gripper is mounted) -->
+                        <site name="ee_site" pos="{_fmt(*spec.ee_site_pos)}" size="0.01" rgba="0 1 0 0.5"/>
+
+                        <body name="r2f85_base" pos="0 0 0.0038" quat="1 0 0 -1">
+                          <inertial mass="{mass(0.777441)}" pos="0 -2.70394e-05 0.0354675" quat="1 -0.00152849 0 0"
+                            diaginertia="{di(0.000260285, 0.000225381, 0.000152708)}"/>
+                          <geom mesh="r2f85_base" material="r2f85_black" class="r2f85_visual"/>
+                          <geom mesh="r2f85_base" class="r2f85_collision"/>
+
+                          <!-- Right-hand side 4-bar linkage -->
+                          <body name="r2f85_right_driver" pos="0 0.0306011 0.054904">
+                            <inertial mass="{mass(0.00899563)}" pos="2.96931e-12 0.0177547 0.00107314" quat="0.681301 0.732003 0 0"
+                              diaginertia="{di(1.72352e-06, 1.60906e-06, 3.22006e-07)}"/>
+                            <joint name="r2f85_right_driver_joint" class="r2f85_driver"/>
+                            <geom mesh="r2f85_driver" material="r2f85_gray" class="r2f85_visual"/>
+                            <geom mesh="r2f85_driver" class="r2f85_collision"/>
+                            <body name="r2f85_right_coupler" pos="0 0.0315 -0.0041">
+                              <inertial mass="{mass(0.0140974)}" pos="0 0.00301209 0.0232175" quat="0.705636 -0.0455904 0.0455904 0.705636"
+                                diaginertia="{di(4.16206e-06, 3.52216e-06, 8.88131e-07)}"/>
+                              <joint name="r2f85_right_coupler_joint" class="r2f85_coupler"/>
+                              <geom mesh="r2f85_coupler" material="r2f85_black" class="r2f85_visual"/>
+                              <geom mesh="r2f85_coupler" class="r2f85_collision"/>
+                            </body>
+                          </body>
+                          <body name="r2f85_right_spring_link" pos="0 0.0132 0.0609">
+                            <inertial mass="{mass(0.0221642)}" pos="-8.65005e-09 0.0181624 0.0212658" quat="0.663403 -0.244737 0.244737 0.663403"
+                              diaginertia="{di(8.96853e-06, 6.71733e-06, 2.63931e-06)}"/>
+                            <joint name="r2f85_right_spring_link_joint" class="r2f85_spring_link"/>
+                            <geom mesh="r2f85_spring_link" material="r2f85_black" class="r2f85_visual"/>
+                            <geom mesh="r2f85_spring_link" class="r2f85_collision"/>
+                            <body name="r2f85_right_follower" pos="0 0.055 0.0375">
+                              <inertial mass="{mass(0.0125222)}" pos="0 -0.011046 0.0124786" quat="1 0.1664 0 0"
+                                diaginertia="{di(2.67415e-06, 2.4559e-06, 6.02031e-07)}"/>
+                              <joint name="r2f85_right_follower_joint" class="r2f85_follower"/>
+                              <geom mesh="r2f85_follower" material="r2f85_black" class="r2f85_visual"/>
+                              <geom mesh="r2f85_follower" class="r2f85_collision"/>
+                              <body name="r2f85_right_pad" pos="0 -0.0189 0.01352">
+                                <inertial mass="{mass(0.0035)}" pos="0 -0.0025 0.0185" quat="0.707107 0 0 0.707107"
+                                  diaginertia="{di(4.73958e-07, 3.64583e-07, 1.23958e-07)}"/>
+                                <geom name="r2f85_right_pad1" type="box" mass="0" pos="0 -0.0026 0.028125"
+                                  size="0.011 0.004 0.009375" friction="0.7" solimp="0.95 0.99 0.001"
+                                  solref="0.004 1" priority="1" rgba="0.55 0.55 0.55 1"/>
+                                <geom name="r2f85_right_pad2" type="box" mass="0" pos="0 -0.0026 0.009375"
+                                  size="0.011 0.004 0.009375" friction="0.6" solimp="0.95 0.99 0.001"
+                                  solref="0.004 1" priority="1" rgba="0.45 0.45 0.45 1"/>
+                                <geom mesh="r2f85_pad" class="r2f85_visual"/>
+                                <body name="r2f85_right_silicone_pad">
+                                  <geom mesh="r2f85_silicone_pad" material="r2f85_black" class="r2f85_visual"/>
+                                </body>
+                              </body>
+                            </body>
+                          </body>
+
+                          <!-- Left-hand side 4-bar linkage -->
+                          <body name="r2f85_left_driver" pos="0 -0.0306011 0.054904" quat="0 0 0 1">
+                            <inertial mass="{mass(0.00899563)}" pos="0 0.0177547 0.00107314" quat="0.681301 0.732003 0 0"
+                              diaginertia="{di(1.72352e-06, 1.60906e-06, 3.22006e-07)}"/>
+                            <joint name="r2f85_left_driver_joint" class="r2f85_driver"/>
+                            <geom mesh="r2f85_driver" material="r2f85_gray" class="r2f85_visual"/>
+                            <geom mesh="r2f85_driver" class="r2f85_collision"/>
+                            <body name="r2f85_left_coupler" pos="0 0.0315 -0.0041">
+                              <inertial mass="{mass(0.0140974)}" pos="0 0.00301209 0.0232175" quat="0.705636 -0.0455904 0.0455904 0.705636"
+                                diaginertia="{di(4.16206e-06, 3.52216e-06, 8.88131e-07)}"/>
+                              <joint name="r2f85_left_coupler_joint" class="r2f85_coupler"/>
+                              <geom mesh="r2f85_coupler" material="r2f85_black" class="r2f85_visual"/>
+                              <geom mesh="r2f85_coupler" class="r2f85_collision"/>
+                            </body>
+                          </body>
+                          <body name="r2f85_left_spring_link" pos="0 -0.0132 0.0609" quat="0 0 0 1">
+                            <inertial mass="{mass(0.0221642)}" pos="-8.65005e-09 0.0181624 0.0212658" quat="0.663403 -0.244737 0.244737 0.663403"
+                              diaginertia="{di(8.96853e-06, 6.71733e-06, 2.63931e-06)}"/>
+                            <joint name="r2f85_left_spring_link_joint" class="r2f85_spring_link"/>
+                            <geom mesh="r2f85_spring_link" material="r2f85_black" class="r2f85_visual"/>
+                            <geom mesh="r2f85_spring_link" class="r2f85_collision"/>
+                            <body name="r2f85_left_follower" pos="0 0.055 0.0375">
+                              <inertial mass="{mass(0.0125222)}" pos="0 -0.011046 0.0124786" quat="1 0.1664 0 0"
+                                diaginertia="{di(2.67415e-06, 2.4559e-06, 6.02031e-07)}"/>
+                              <joint name="r2f85_left_follower_joint" class="r2f85_follower"/>
+                              <geom mesh="r2f85_follower" material="r2f85_black" class="r2f85_visual"/>
+                              <geom mesh="r2f85_follower" class="r2f85_collision"/>
+                              <body name="r2f85_left_pad" pos="0 -0.0189 0.01352">
+                                <inertial mass="{mass(0.0035)}" pos="0 -0.0025 0.0185" quat="1 0 0 1"
+                                  diaginertia="{di(4.73958e-07, 3.64583e-07, 1.23958e-07)}"/>
+                                <geom name="r2f85_left_pad1" type="box" mass="0" pos="0 -0.0026 0.028125"
+                                  size="0.011 0.004 0.009375" friction="0.7" solimp="0.95 0.99 0.001"
+                                  solref="0.004 1" priority="1" rgba="0.55 0.55 0.55 1"/>
+                                <geom name="r2f85_left_pad2" type="box" mass="0" pos="0 -0.0026 0.009375"
+                                  size="0.011 0.004 0.009375" friction="0.6" solimp="0.95 0.99 0.001"
+                                  solref="0.004 1" priority="1" rgba="0.45 0.45 0.45 1"/>
+                                <geom mesh="r2f85_pad" class="r2f85_visual"/>
+                                <body name="r2f85_left_silicone_pad">
+                                  <geom mesh="r2f85_silicone_pad" material="r2f85_black" class="r2f85_visual"/>
+                                </body>
+                              </body>
+                            </body>
+                          </body>
+                        </body>
+                      </body>"""
+
+
+def _gripper_xml(spec: EndEffectorSpec) -> str:
+    if spec.name == "franka":
+        return _franka_gripper_xml(spec)
+    return _robotiq_gripper_xml(spec)
+
+
+def _ee_default_block(spec: EndEffectorSpec) -> str:
+    if spec.name != "robotiq_2f85":
+        return ""
+    return """
+
+    <!-- Robotiq 2F-85 defaults (alternative end-effector, see controllers/end_effectors.py) -->
+    <default class="r2f85">
+      <joint axis="1 0 0"/>
+      <default class="r2f85_driver">
+        <joint range="0 0.8" armature="0.005" damping="0.1"
+               solimplimit="0.95 0.99 0.001" solreflimit="0.005 1"/>
+      </default>
+      <default class="r2f85_follower">
+        <joint pos="0 -0.018 0.0065" range="-0.872664 0.872664" armature="0.001"
+               solimplimit="0.95 0.99 0.001" solreflimit="0.005 1"/>
+      </default>
+      <default class="r2f85_spring_link">
+        <joint range="-0.29670597283 0.8" armature="0.001"
+               stiffness="0.05" springref="2.62" damping="0.00125"/>
+      </default>
+      <default class="r2f85_coupler">
+        <joint range="-1.57 0" armature="0.001"
+               solimplimit="0.95 0.99 0.001" solreflimit="0.005 1"/>
+      </default>
+      <default class="r2f85_visual">
+        <geom type="mesh" contype="0" conaffinity="0" group="2"/>
+      </default>
+      <default class="r2f85_collision">
+        <geom type="mesh" group="3"/>
+      </default>
+    </default>"""
+
+
+def _ee_asset_block(spec: EndEffectorSpec) -> str:
+    if spec.name != "robotiq_2f85":
+        return ""
+    return """
+
+    <!-- Robotiq 2F-85 materials (prefixed to avoid conflicts) -->
+    <material name="r2f85_black" rgba="0.149 0.149 0.149 1"/>
+    <material name="r2f85_gray"  rgba="0.4627 0.4627 0.4627 1"/>
+
+    <!-- Robotiq 2F-85 meshes -->
+    <mesh name="r2f85_base_mount"   file="../assets/robotiq_2f85/assets/base_mount.stl"   scale="0.001 0.001 0.001"/>
+    <mesh name="r2f85_base"         file="../assets/robotiq_2f85/assets/base.stl"         scale="0.001 0.001 0.001"/>
+    <mesh name="r2f85_driver"       file="../assets/robotiq_2f85/assets/driver.stl"       scale="0.001 0.001 0.001"/>
+    <mesh name="r2f85_coupler"      file="../assets/robotiq_2f85/assets/coupler.stl"      scale="0.001 0.001 0.001"/>
+    <mesh name="r2f85_follower"     file="../assets/robotiq_2f85/assets/follower.stl"     scale="0.001 0.001 0.001"/>
+    <mesh name="r2f85_pad"          file="../assets/robotiq_2f85/assets/pad.stl"          scale="0.001 0.001 0.001"/>
+    <mesh name="r2f85_silicone_pad" file="../assets/robotiq_2f85/assets/silicone_pad.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="r2f85_spring_link"  file="../assets/robotiq_2f85/assets/spring_link.stl"  scale="0.001 0.001 0.001"/>"""
+
+
+def _ee_actuator_xml(spec: EndEffectorSpec) -> str:
+    if spec.name == "franka":
+        return f"""    <general class="panda" name="{spec.actuator_name}" tendon="panda_split"
+             forcerange="-100 100" ctrlrange="0 255"
+             gainprm="0.01568627451 0 0" biasprm="0 -100 -10"/>"""
+    return f"""    <general class="panda" name="{spec.actuator_name}" tendon="panda_split"
+             forcerange="-5 5" ctrlrange="0 255"
+             gainprm="0.3137255 0 0" biasprm="0 -100 -10"/>"""
+
+
+def _ee_tendon_xml(spec: EndEffectorSpec) -> str:
+    joints = "\n".join(f'      <joint joint="{j}" coef="0.5"/>' for j in spec.driver_joints)
+    return f"""    <fixed name="panda_split">
+{joints}
+    </fixed>"""
+
+
+def _ee_equality_xml(spec: EndEffectorSpec) -> str:
+    if spec.name == "franka":
+        return """    <joint joint1="finger_joint1" joint2="finger_joint2"
+           solimp="0.95 0.99 0.001" solref="0.005 1"/>"""
+    return """    <connect anchor="0 0 0" body1="r2f85_right_follower" body2="r2f85_right_coupler"
+             solimp="0.95 0.99 0.001" solref="0.005 1"/>
+    <connect anchor="0 0 0" body1="r2f85_left_follower" body2="r2f85_left_coupler"
+             solimp="0.95 0.99 0.001" solref="0.005 1"/>
+    <joint joint1="r2f85_right_driver_joint" joint2="r2f85_left_driver_joint"
+           polycoef="0 1 0 0 0" solimp="0.95 0.99 0.001" solref="0.005 1"/>"""
+
+
+def _ee_contact_exclude_xml(spec: EndEffectorSpec) -> str:
+    if spec.name == "franka":
+        return '    <exclude body1="panda_link7" body2="panda_hand"/>'
+    return """    <exclude body1="panda_link7" body2="r2f85_base_mount"/>
+    <exclude body1="r2f85_base" body2="r2f85_left_driver"/>
+    <exclude body1="r2f85_base" body2="r2f85_right_driver"/>
+    <exclude body1="r2f85_base" body2="r2f85_left_spring_link"/>
+    <exclude body1="r2f85_base" body2="r2f85_right_spring_link"/>
+    <exclude body1="r2f85_right_coupler" body2="r2f85_right_follower"/>
+    <exclude body1="r2f85_left_coupler" body2="r2f85_left_follower"/>"""
+
+
+def _ee_keyframe(spec: EndEffectorSpec) -> tuple[str, str, str]:
+    """Return (qpos_tail, ctrl_tail, qpos_layout_comment) for the home keyframe."""
+    ctrl_tail = f"{spec.open_ctrl:.6g}"
+    if spec.name == "franka":
+        qpos_tail = "0.04 0.04"
+        comment = """qpos layout (35 total):
+        [0:3]   base_link position (x, y, z)
+        [3:7]   base_link quaternion (w, x, y, z)
+        [7:19]  leg joints FR/FL/RR/RL x [hip, thigh, calf]
+        [19:26] Panda joint1-7
+        [26:28] finger_joint1, finger_joint2
+        [28:35] target_cube freejoint (x, y, z, qw, qx, qy, qz)
+      ctrl layout (20 total):
+        [0:12]  Go2 leg motors (FR, FL, RR, RL order)
+        [12:19] Panda arm actuators 1-7
+        [19]    Gripper actuator8"""
+    else:
+        qpos_tail = "0 0 0 0 0 0 0 0"
+        comment = """qpos layout (41 total):
+        [0:3]   base_link position (x, y, z)
+        [3:7]   base_link quaternion (w, x, y, z)
+        [7:19]  leg joints FR/FL/RR/RL x [hip, thigh, calf]
+        [19:26] Panda joint1-7
+        [26:34] Robotiq 2F-85: right_driver, right_coupler, right_spring_link,
+                right_follower, left_driver, left_coupler, left_spring_link, left_follower
+        [34:41] target_cube freejoint (x, y, z, qw, qx, qy, qz)
+      ctrl layout (20 total):
+        [0:12]  Go2 leg motors (FR, FL, RR, RL order)
+        [12:19] Panda arm actuators 1-7
+        [19]    Gripper actuator8 (Robotiq fingers_actuator-equivalent)"""
+    return qpos_tail, ctrl_tail, comment
+
+
+def build_combined_xml(end_effector: str = DEFAULT_END_EFFECTOR) -> str:
+    """Return the complete combined MJCF XML as a string."""
+    spec = get_spec(end_effector)
+    qpos_tail, ctrl_tail, keyframe_comment = _ee_keyframe(spec)
+
+    xml = f"""<mujoco model="go2_panda">
+  <!-- END_EFFECTOR_STAMP: {spec.name} -->
   <!--
     Combined Unitree Go2 + Franka Panda loco-manipulation model.
     Coordinate frame: X-forward, Y-left, Z-up (standard robotics).
@@ -125,7 +437,7 @@ def build_combined_xml() -> str:
         </default>
       </default>
     </default>
-
+{_ee_default_block(spec)}
   </default>
 
   <!-- ── Assets ──────────────────────────────────────────────────────── -->
@@ -255,6 +567,7 @@ def build_combined_xml() -> str:
     <mesh name="p_hand_4"   file="../assets/panda/assets/hand_4.obj"/>
     <mesh name="p_finger_0" file="../assets/panda/assets/finger_0.obj"/>
     <mesh name="p_finger_1" file="../assets/panda/assets/finger_1.obj"/>
+{_ee_asset_block(spec)}
   </asset>
 
   <!-- ── World ───────────────────────────────────────────────────────── -->
@@ -548,47 +861,7 @@ def build_combined_xml() -> str:
                       <geom mesh="p_link7_7" material="white"  class="panda_visual"/>
                       <geom mesh="p_link7_c" class="panda_collision"/>
 
-                      <body name="panda_hand" pos="0 0 0.107" quat="0.9238795 0 0 -0.3826834">
-                        <inertial mass="0.2555" pos="-0.01 0 0.03"
-                                  diaginertia="3.5e-4 8.75e-4 5.95e-4"/>
-                        <geom mesh="p_hand_0" material="p_off_white" class="panda_visual"/>
-                        <geom mesh="p_hand_1" material="p_dark"      class="panda_visual"/>
-                        <geom mesh="p_hand_2" material="p_dark"      class="panda_visual"/>
-                        <geom mesh="p_hand_3" material="white"        class="panda_visual"/>
-                        <geom mesh="p_hand_4" material="p_off_white" class="panda_visual"/>
-                        <geom mesh="p_hand_c" class="panda_collision"/>
-
-                        <!-- End-effector site: between fingertips -->
-                        <site name="ee_site" pos="0 0 0.12" size="0.01" rgba="0 1 0 0.5"/>
-
-                        <body name="panda_left_finger" pos="0 0 0.0584">
-                          <inertial mass="0.00525" pos="0 0 0"
-                                    diaginertia="8.313e-7 8.313e-7 2.625e-7"/>
-                          <joint name="finger_joint1" class="panda_finger"/>
-                          <geom mesh="p_finger_0" material="p_off_white" class="panda_visual"/>
-                          <geom mesh="p_finger_1" material="p_dark"      class="panda_visual"/>
-                          <geom mesh="p_finger_0" class="panda_collision"/>
-                          <geom class="ftp1"/>
-                          <geom class="ftp2"/>
-                          <geom class="ftp3"/>
-                          <geom class="ftp4"/>
-                          <geom class="ftp5"/>
-                        </body>
-
-                        <body name="panda_right_finger" pos="0 0 0.0584" quat="0 0 0 1">
-                          <inertial mass="0.00525" pos="0 0 0"
-                                    diaginertia="8.313e-7 8.313e-7 2.625e-7"/>
-                          <joint name="finger_joint2" class="panda_finger"/>
-                          <geom mesh="p_finger_0" material="p_off_white" class="panda_visual"/>
-                          <geom mesh="p_finger_1" material="p_dark"      class="panda_visual"/>
-                          <geom mesh="p_finger_0" class="panda_collision"/>
-                          <geom class="ftp1"/>
-                          <geom class="ftp2"/>
-                          <geom class="ftp3"/>
-                          <geom class="ftp4"/>
-                          <geom class="ftp5"/>
-                        </body>
-                      </body>
+{_gripper_xml(spec)}
                     </body>
                   </body>
                 </body>
@@ -673,26 +946,20 @@ def build_combined_xml() -> str:
              ctrlrange="-0.0175 3.7525"/>
     <general class="panda" name="actuator7" joint="joint7"
              gainprm="2000" biasprm="0 -2000 -200" forcerange="-12 12"/>
-    <!-- Gripper: tendon-based, ctrl range 0-255 mapped to 0-0.04 m -->
-    <general class="panda" name="actuator8" tendon="panda_split"
-             forcerange="-100 100" ctrlrange="0 255"
-             gainprm="0.01568627451 0 0" biasprm="0 -100 -10"/>
+    <!-- Gripper: tendon-based, ctrl range 0-255 -->
+{_ee_actuator_xml(spec)}
   </actuator>
 
   <!-- ── Tendons ──────────────────────────────────────────────────────── -->
   <tendon>
     <!-- Finger synchronization: both fingers move together -->
-    <fixed name="panda_split">
-      <joint joint="finger_joint1" coef="0.5"/>
-      <joint joint="finger_joint2" coef="0.5"/>
-    </fixed>
+{_ee_tendon_xml(spec)}
   </tendon>
 
   <!-- ── Equality constraints ─────────────────────────────────────────── -->
   <equality>
-    <!-- Finger mimic: right finger mirrors left finger -->
-    <joint joint1="finger_joint1" joint2="finger_joint2"
-           solimp="0.95 0.99 0.001" solref="0.005 1"/>
+    <!-- Finger mimic / 4-bar linkage coupling -->
+{_ee_equality_xml(spec)}
   </equality>
 
   <!-- ── Sensors ──────────────────────────────────────────────────────── -->
@@ -764,7 +1031,7 @@ def build_combined_xml() -> str:
     <exclude body1="panda_link4" body2="panda_link5"/>
     <exclude body1="panda_link5" body2="panda_link6"/>
     <exclude body1="panda_link6" body2="panda_link7"/>
-    <exclude body1="panda_link7" body2="panda_hand"/>
+{_ee_contact_exclude_xml(spec)}
     <!-- Panda-Go2 trunk exclusion (mounting interface) -->
     <exclude body1="base_link"   body2="panda_link0"/>
   </contact>
@@ -772,26 +1039,16 @@ def build_combined_xml() -> str:
   <!-- ── Keyframe ─────────────────────────────────────────────────────── -->
   <keyframe>
     <!--
-      qpos layout (35 total):
-        [0:3]   base_link position (x, y, z)
-        [3:7]   base_link quaternion (w, x, y, z)
-        [7:19]  leg joints FR/FL/RR/RL × [hip, thigh, calf]
-        [19:26] Panda joint1-7
-        [26:28] finger_joint1, finger_joint2
-        [28:35] target_cube freejoint (x, y, z, qw, qx, qy, qz)
-      ctrl layout (20 total):
-        [0:12]  Go2 leg motors (FR, FL, RR, RL order)
-        [12:19] Panda arm actuators 1-7
-        [19]    Gripper actuator8
+      {keyframe_comment}
     -->
     <key name="home"
       qpos="0 0 0.27 1 0 0 0
             0 0.9 -1.8  0 0.9 -1.8  0 0.9 -1.8  0 0.9 -1.8
             0 0 0 -1.5708 0 1.5708 -0.7853
-            0.04 0.04
+            {qpos_tail}
             1.6 0 0.325 1 0 0 0"
       ctrl="0 0.9 -1.8  0 0.9 -1.8  0 0.9 -1.8  0 0.9 -1.8
-            0 0 0 -1.5708 0 1.5708 -0.7853  255"/>
+            0 0 0 -1.5708 0 1.5708 -0.7853  {ctrl_tail}"/>
   </keyframe>
 
 </mujoco>
@@ -799,11 +1056,11 @@ def build_combined_xml() -> str:
     return xml
 
 
-def main() -> None:
+def main(end_effector: str = DEFAULT_END_EFFECTOR) -> None:
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
     out_path = MODELS_DIR / "combined.xml"
-    out_path.write_text(build_combined_xml(), encoding="utf-8")
-    print(f"Written: {out_path}")
+    out_path.write_text(build_combined_xml(end_effector), encoding="utf-8")
+    print(f"Written: {out_path}  (end_effector={end_effector})")
     print("Verifying model loads...")
 
     import mujoco  # noqa: PLC0415

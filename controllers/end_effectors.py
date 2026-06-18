@@ -97,3 +97,36 @@ def get_spec(name: str) -> EndEffectorSpec:
     except KeyError:
         valid = ", ".join(sorted(END_EFFECTORS))
         raise ValueError(f"Unknown end-effector {name!r}. Valid options: {valid}") from None
+
+
+@dataclass(frozen=True)
+class MountOverride:
+    """Non-default wrist-mount geometry for a specific (arm, end_effector) pair.
+
+    Most arm+gripper combos mount the gripper relative to the wrist flange
+    using EndEffectorSpec.mount_pos/mount_quat/ee_site_pos unchanged (today's
+    Franka-relative behavior). Kinova+Robotiq needs different geometry per
+    the upstream kinova_gen3/README.md: skip Robotiq's base_mount coupling
+    body entirely (it duplicates Kinova's own end-effector interface) and
+    mount Robotiq's base body, plus the ee_site, at different offsets.
+    """
+    mount_pos: tuple[float, float, float]
+    mount_quat: tuple[float, float, float, float]
+    skip_base_mount: bool
+    ee_site_pos: tuple[float, float, float]
+    ee_site_quat: tuple[float, float, float, float]
+
+
+MOUNT_OVERRIDES: dict[tuple[str, str], MountOverride] = {
+    ("kinova_gen3", "robotiq_2f85"): MountOverride(
+        mount_pos=(0.0, 0.0, -0.06149039),
+        mount_quat=(0.0, -1.0, 1.0, 0.0),
+        skip_base_mount=True,
+        ee_site_pos=(0.0, 0.0, -0.181525),
+        ee_site_quat=(0.0, 1.0, 0.0, 0.0),
+    ),
+}
+
+
+def get_mount_override(arm_name: str, ee_name: str) -> MountOverride | None:
+    return MOUNT_OVERRIDES.get((arm_name, ee_name))

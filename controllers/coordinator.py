@@ -35,6 +35,7 @@ from typing import Any
 import mujoco
 import numpy as np
 
+from .arms import DEFAULT_ARM
 from .end_effectors import DEFAULT_END_EFFECTOR
 from .locomotion import GaitMode, LocomotionController
 from .manipulation import ManipulationController
@@ -84,6 +85,7 @@ class TaskCoordinator:
         model: mujoco.MjModel,
         data: mujoco.MjData,
         config: dict[str, Any],
+        arm: str = DEFAULT_ARM,
         end_effector: str = DEFAULT_END_EFFECTOR,
     ) -> None:
         self.model = model
@@ -94,7 +96,7 @@ class TaskCoordinator:
 
         # Sub-controllers
         self.loco  = LocomotionController(model, data)
-        self.manip = ManipulationController(model, data, end_effector=end_effector)
+        self.manip = ManipulationController(model, data, arm=arm, end_effector=end_effector)
         self._ftp  = self.manip._ee_spec.ftp_offset
 
         # State machine

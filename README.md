@@ -1,8 +1,10 @@
-# Go2 + Franka Loco-Manipulation
+# Go2 + Swappable Arm Loco-Manipulation
 
-A MuJoCo simulation of a Unitree Go2 quadruped with a Franka Panda arm mounted on its back, performing a full autonomous pick-and-place task — no external SDKs, no ROS, pure Python.
+A MuJoCo simulation of a Unitree Go2 quadruped with a swappable robotic arm — Franka Panda or Kinova Gen3 — mounted on its back, performing a full autonomous pick-and-place task — no external SDKs, no ROS, pure Python.
 
-The robot walks to a table, lowers its stance to optimise arm workspace, reaches down to grasp a cube with the Panda arm, transports it to a placement plate, and returns the arm to home. The complete task runs in ~34 seconds of simulated time.
+The robot walks to a table, lowers its stance to optimise arm workspace, reaches down to grasp a cube with the arm, transports it to a placement plate, and returns the arm to home. The complete task runs in ~34 seconds of simulated time.
+
+Both arms support the stock Franka two-finger gripper or a vendored Robotiq 2F-85 adaptive gripper (Kinova currently supports Robotiq only — see [Technical Details](#robot-model)).
 
 ## Demo
 
@@ -18,9 +20,11 @@ scripts/run_simulation.py   ← entry point (viewer / headless / record)
 scripts/build_model.py      ← generates models/combined.xml from scratch
 tasks/reach_task.py         ← logging wrapper around the coordinator
 controllers/
+  arms.py                   ← arm registry (Franka Panda, Kinova Gen3) + combo validation
+  end_effectors.py          ← end-effector registry (Franka hand, Robotiq 2F-85) + mount overrides
   coordinator.py            ← 15-state task state machine
   locomotion.py             ← Go2 PD stand + sinusoidal trot gait
-  manipulation.py           ← Panda velocity-IK + gripper control
+  manipulation.py           ← arm velocity-IK + gripper control (arm-agnostic)
 configs/default.yaml        ← all tunable parameters
 models/combined.xml         ← built MJCF (auto-generated, not hand-edited)
 ```
@@ -56,26 +60,42 @@ pip install mujoco numpy pyyaml opencv-python
 ### 2. Build the combined model
 
 ```bash
-python scripts/build_model.py
+python scripts/build_model.py                                    # default: Franka Panda + stock gripper
+python scripts/build_model.py --arm kinova_gen3                   # Kinova Gen3 + Robotiq 2F-85 (its default)
+python scripts/build_model.py --end-effector robotiq_2f85         # Franka Panda + Robotiq 2F-85
 ```
 
 ### 3. Run
 
 ```bash
-# Interactive viewer (real-time, pauseable)
+# Interactive viewer (real-time, pauseable) -- defaults to Franka Panda
 python scripts/run_simulation.py
 
 # Headless (fast, prints state transitions)
 python scripts/run_simulation.py --no-viewer
 
-# Record to MP4 (headless + video output)
+# Swap the arm -- model is rebuilt automatically if the cached one doesn't match
+python scripts/run_simulation.py --arm kinova_gen3 --no-viewer
+
+# Swap the end-effector (defaults to the arm's own default if omitted)
+python scripts/run_simulation.py --end-effector robotiq_2f85 --no-viewer
+
+# Record to MP4 (headless + video output, auto-named media/simulation_recording_<arm>_<end-effector>.mp4)
 python scripts/run_simulation.py --record
 
-# Record with custom path and resolution
-python scripts/run_simulation.py --record --video-path demo.mp4 --record-width 1920 --record-height 1080
+# Record with a custom path (resolution capped at 1280x720, see note below)
+python scripts/run_simulation.py --record --video-path demo.mp4 --record-width 1280 --record-height 720
+
+# Force a rebuild even if the cached model already matches the requested combo
+python scripts/run_simulation.py --build-model
 ```
 
 > Note: do not pass `--duration 30` when recording — the task takes ~34 s. Omit `--duration` to use the config default (150 s); the simulation stops automatically when `DONE` is reached.
+>
+> Note: `--record-width`/`--record-height` cannot exceed the model's offscreen framebuffer, set via `<visual><global offwidth="1280" offheight="720"/></visual>` in `scripts/build_model.py`. Requesting a larger resolution raises `ValueError: Image width ... > framebuffer width ...`. To record larger than 1280x720, bump `offwidth`/`offheight` in `build_model.py` and rebuild.
+>
+
+> Note: Kinova Gen3 only supports the Robotiq 2F-85 gripper — `--arm kinova_gen3 --end-effector franka` raises a `ValueError` before touching any files.
 
 ### 4. Run tests
 
@@ -83,7 +103,7 @@ python scripts/run_simulation.py --record --video-path demo.mp4 --record-width 1
 pytest tests/ -v
 ```
 
-39 tests covering model integrity, controller math, stability, and full task integration.
+81 tests covering model integrity, controller math, stability, full task integration, arm/end-effector variant combinations, and CLI helpers.
 
 ---
 
@@ -110,30 +130,35 @@ task:
 ```
 Go2+FR/
 ├── assets/
-│   ├── go2/            Unitree Go2 meshes (OBJ)
-│   └── panda/          Franka Panda meshes (OBJ + STL)
+│   ├── go2/             Unitree Go2 meshes (OBJ)
+│   ├── panda/           Franka Panda meshes (OBJ + STL)
+│   ├── kinova_gen3/     Kinova Gen3 meshes (vendored from upstream)
+│   └── robotiq_2f85/    Robotiq 2F-85 gripper meshes
 ├── configs/
 │   └── default.yaml
 ├── controllers/
-│   ├── base.py         BaseController ABC
-│   ├── locomotion.py   Go2 PD + trot gait + crouch blend
-│   ├── manipulation.py Panda velocity-IK, batch IK, gripper
-│   └── coordinator.py  Task state machine (15 states)
+│   ├── base.py          BaseController ABC
+│   ├── arms.py           Arm registry (ArmSpec for Franka Panda / Kinova Gen3) + validate_combo
+│   ├── end_effectors.py  End-effector registry (EndEffectorSpec, MountOverride) for Franka hand / Robotiq 2F-85
+│   ├── locomotion.py    Go2 PD + trot gait + crouch blend
+│   ├── manipulation.py  Arm-agnostic velocity-IK, batch IK, gripper control
+│   └── coordinator.py   Task state machine (15 states)
 ├── models/
-│   └── combined.xml    Auto-generated MJCF (git-ignored if large)
+│   └── combined.xml     Auto-generated MJCF (git-ignored if large)
 ├── scripts/
-│   ├── build_model.py  MJCF generator
+│   ├── build_model.py     MJCF generator
 │   ├── run_simulation.py  Main entry point
-│   └── smoke_test*.py  Quick sanity scripts
+│   └── smoke_test*.py     Quick sanity scripts
 ├── tasks/
-│   └── reach_task.py   Task wrapper with logging
+│   └── reach_task.py    Task wrapper with logging
 ├── tests/
 │   ├── test_model.py
 │   ├── test_controllers.py
+│   ├── test_run_simulation.py
 │   ├── test_stability.py
 │   └── test_task.py
-├── archieve/           Iterative development history (m01–m14)
-│   └── controllers/    ik_controller_m0/m1/m2, grasp_controller, etc.
+├── archieve/            Iterative development history (m01–m14)
+│   └── controllers/     ik_controller_m0/m1/m2, grasp_controller, etc.
 └── configs/
     └── default.yaml
 ```
@@ -145,8 +170,14 @@ Go2+FR/
 ### Robot Model
 
 - **Go2**: 12-DOF quadruped (4 legs × 3 joints). Free joint for base. Leg motors: hip/thigh ±60 Nm, knee ±90 Nm (boosted from stock for arm payload).
-- **Panda**: 7-DOF arm rigidly mounted 10 cm above Go2 base_link. Masses scaled to 35% of original (~6.5 kg from 18.5 kg) to match real payload capacity. Integrated PD actuators (`general` type with `gainprm`/`biasprm`).
-- **Combined model**: 35 qpos (7 base + 12 legs + 7 arm + 2 fingers + 7 cube), 20 actuators, ~21 kg total mass.
+- **Arm (swappable, `--arm`)**: 7-DOF, rigidly mounted above Go2 base_link. Both options are registered in `controllers/arms.py` (`ArmSpec`) and selected via `scripts/build_model.py --arm <name>` / `scripts/run_simulation.py --arm <name>`:
+  - **Franka Panda** (`franka`, default): masses scaled to 35% of original (~6.5 kg from 18.5 kg) to match real payload capacity. Integrated PD actuators (`general` type with `gainprm`/`biasprm`).
+  - **Kinova Gen3** (`kinova_gen3`): native `position` PD servos (`kp`/`kv`), upstream masses/inertias preserved. Joints 1/3/5/7 are continuous (unranged) per the upstream model.
+- **End-effector (swappable, `--end-effector`)**: registered in `controllers/end_effectors.py` (`EndEffectorSpec`):
+  - **Franka hand** (`franka`): the Panda's stock two-finger gripper — Franka arm only.
+  - **Robotiq 2F-85** (`robotiq_2f85`): vendored adaptive gripper, mountable on either arm via a per-arm `MountOverride` (Kinova's mount geometry differs from Franka's, and the Kinova mount omits the Robotiq base-mount body entirely).
+  - **Kinova Gen3 only supports `robotiq_2f85`** — `validate_combo()` rejects `kinova_gen3` + `franka` with a `ValueError` before any model is built.
+- **Combined model** (Franka + Franka-hand default): 35 qpos (7 base + 12 legs + 7 arm + 2 fingers + 7 cube), 20 actuators, ~21 kg total mass. Kinova + Robotiq: 41 qpos.
 
 ### Velocity IK
 

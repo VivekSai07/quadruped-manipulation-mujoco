@@ -10,6 +10,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from controllers.arms import DEFAULT_ARM
 from controllers.end_effectors import END_EFFECTORS
 from controllers.locomotion import GaitMode, LocomotionController
 from controllers.manipulation import ManipulationController
@@ -18,14 +19,14 @@ from scripts.build_model import build_combined_xml
 MODEL_PATH = str(Path(__file__).parent.parent / "models" / "combined.xml")
 
 
-def _load_variant_model(name: str) -> mujoco.MjModel:
-    """Build an end-effector variant and load it via a scratch file in
+def _load_variant_model(arm: str, end_effector: str) -> mujoco.MjModel:
+    """Build an arm/end-effector variant and load it via a scratch file in
     models/ so mesh paths (relative to that directory) still resolve --
     from_xml_string has no file-path context for relative asset references.
     """
-    xml = build_combined_xml(name)
+    xml = build_combined_xml(arm, end_effector)
     models_dir = Path(__file__).parent.parent / "models"
-    scratch_path = models_dir / f"_test_scratch_{name}.xml"
+    scratch_path = models_dir / f"_test_scratch_{arm}_{end_effector}.xml"
     scratch_path.write_text(xml, encoding="utf-8")
     try:
         return mujoco.MjModel.from_xml_path(str(scratch_path))
@@ -136,9 +137,8 @@ class TestManipulationController:
         q, converged = manip._numerical_ik(target)
         # IK should produce valid joint angles
         assert q.shape == (7,)
-        from controllers.manipulation import _Q_LO, _Q_HI
-        assert np.all(q >= _Q_LO), "IK violated lower limits"
-        assert np.all(q <= _Q_HI), "IK violated upper limits"
+        assert np.all(q >= manip._q_lo), "IK violated lower limits"
+        assert np.all(q <= manip._q_hi), "IK violated upper limits"
 
     def test_arm_qpos_returns_7_values(self, model_data):
         m, d = model_data
@@ -151,7 +151,7 @@ class TestManipulationController:
 def ee_variant_model_data(request):
     """Build (model, data, end_effector_name) for each variant."""
     name = request.param
-    m = _load_variant_model(name)
+    m = _load_variant_model(DEFAULT_ARM, name)
     d = mujoco.MjData(m)
     kid = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_KEY, "home")
     mujoco.mj_resetDataKeyframe(m, d, kid)

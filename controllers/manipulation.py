@@ -1,25 +1,17 @@
 """
-Manipulation controller for the Franka Panda arm.
+Manipulation controller for the swappable arm (see controllers/arms.py).
 
-The Panda actuators use integrated PD control (MuJoCo `general` type with
-gainprm/biasprm). The ctrl input is the desired joint angle (rad); MuJoCo
-internally computes: force = kp*(ctrl - q) + kd*(0 - q_dot).
-
-So this controller only needs to:
-  1. Track a desired joint configuration in ctrl[12:20]
+Both supported arms use position-tracking actuators (Franka: integrated PD
+via MuJoCo `general` type with gainprm/biasprm; Kinova: native `position`
+servos) where the ctrl input is the desired joint angle (rad). So this
+controller only needs to:
+  1. Track a desired joint configuration in ctrl[12:19]
   2. Optionally compute joint targets via numerical IK
 
 Joint layout in combined.xml actuators (indices 12-19):
-  ctrl[12] → actuator1 → joint1   (z-axis, base rotation)
-  ctrl[13] → actuator2 → joint2   (shoulder pitch)
-  ctrl[14] → actuator3 → joint3   (upper arm roll)
-  ctrl[15] → actuator4 → joint4   (elbow pitch)
-  ctrl[16] → actuator5 → joint5   (forearm roll)
-  ctrl[17] → actuator6 → joint6   (wrist pitch)
-  ctrl[18] → actuator7 → joint7   (wrist roll)
-  ctrl[19] → actuator8 → gripper  (open/close values are end-effector-specific,
-                                    see controllers/end_effectors.py; 255=open/
-                                    0=closed for the default Franka gripper)
+  ctrl[12:19] → arm actuators 1-7 (names/order from ArmSpec.actuator_names)
+  ctrl[19]    → gripper           (open/close values are end-effector-specific,
+                                    see controllers/end_effectors.py)
 """
 from __future__ import annotations
 
@@ -29,11 +21,9 @@ from typing import Sequence
 import mujoco
 import numpy as np
 
+from .arms import DEFAULT_ARM, get_arm_spec
 from .base import BaseController
 from .end_effectors import DEFAULT_END_EFFECTOR, get_spec
-
-# Panda home pose: arm folded safely above robot
-_HOME_POSE = np.array([0.0, 0.0, 0.0, -1.5708, 0.0, 1.5708, -0.7853], dtype=np.float64)
 
 # Velocity-IK gains — archive m02 style, called every physics step
 _VEL_IK_KP:  float = 5.0   # translational gain (m/s per m of error)
@@ -56,20 +46,6 @@ _TARGET_ROTATION = np.array([
 # Keep lower than 1.0 so position convergence is not sacrificed for orientation.
 _IK_ROT_GAIN = 0.4
 
-# Joint limits (from panda.xml)
-_Q_LO = np.array([-2.8973, -1.7628, -2.8973, -3.0718, -2.8973, -0.0175, -2.8973])
-_Q_HI = np.array([ 2.8973,  1.7628,  2.8973, -0.0698,  2.8973,  3.7525,  2.8973])
-
-_ARM_ACTUATOR_NAMES = [
-    "actuator1", "actuator2", "actuator3", "actuator4",
-    "actuator5", "actuator6", "actuator7",
-]
-
-_ARM_JOINT_NAMES = [
-    "joint1", "joint2", "joint3", "joint4",
-    "joint5", "joint6", "joint7",
-]
-
 
 class ManipulationController(BaseController):
     """Joint-space position controller with optional numerical IK for the Panda arm."""
@@ -83,28 +59,33 @@ class ManipulationController(BaseController):
         self,
         model: mujoco.MjModel,
         data: mujoco.MjData,
+        arm: str = DEFAULT_ARM,
         end_effector: str = DEFAULT_END_EFFECTOR,
     ) -> None:
         super().__init__(model, data)
-        self._q_target = _HOME_POSE.copy()
+        self._arm_spec = get_arm_spec(arm)
+        self._home_pose = np.array(self._arm_spec.home_pose, dtype=np.float64)
+        self._q_lo = np.array(self._arm_spec.q_lo, dtype=np.float64)
+        self._q_hi = np.array(self._arm_spec.q_hi, dtype=np.float64)
+        self._q_target = self._home_pose.copy()
         self._gripper_open = True
         self._ee_spec = get_spec(end_effector)
 
         # Cached IDs
         self._act_ids = [
             mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, n)
-            for n in _ARM_ACTUATOR_NAMES
+            for n in self._arm_spec.actuator_names
         ]
         self._gripper_id = mujoco.mj_name2id(
             model, mujoco.mjtObj.mjOBJ_ACTUATOR, self._ee_spec.actuator_name
         )
         self._jnt_qadr = [
             model.jnt_qposadr[mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, n)]
-            for n in _ARM_JOINT_NAMES
+            for n in self._arm_spec.joint_names
         ]
         self._jnt_dadr = [
             model.jnt_dofadr[mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, n)]
-            for n in _ARM_JOINT_NAMES
+            for n in self._arm_spec.joint_names
         ]
         self._ee_site_id = mujoco.mj_name2id(
             model, mujoco.mjtObj.mjOBJ_SITE, "ee_site"
@@ -125,10 +106,10 @@ class ManipulationController(BaseController):
 
     def set_joint_target(self, q: np.ndarray) -> None:
         """Set desired arm joint configuration directly (7 values)."""
-        self._q_target = np.clip(q, _Q_LO, _Q_HI)
+        self._q_target = np.clip(q, self._q_lo, self._q_hi)
 
     def set_home(self) -> None:
-        self._q_target = _HOME_POSE.copy()
+        self._q_target = self._home_pose.copy()
 
     def set_gripper(self, open_: bool) -> None:
         self._gripper_open = open_
@@ -155,7 +136,7 @@ class ManipulationController(BaseController):
             self.model.jnt_dofadr[
                 mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, n)
             ]
-            for n in _ARM_JOINT_NAMES
+            for n in self._arm_spec.joint_names
         ]
 
         qpos_save = self.data.qpos.copy()
@@ -198,7 +179,7 @@ class ManipulationController(BaseController):
             dq_vel = np.clip(dq_vel, -_VEL_IK_MAX, _VEL_IK_MAX)
 
             # Integrate from the COMMANDED target — avoids PD-lag wind-up
-            q_new = np.clip(self._q_target + dq_vel * dt, _Q_LO, _Q_HI)
+            q_new = np.clip(self._q_target + dq_vel * dt, self._q_lo, self._q_hi)
             self._q_target = q_new
 
         self.data.qpos[:] = qpos_save
@@ -209,10 +190,10 @@ class ManipulationController(BaseController):
 
     def home_qpos(self) -> np.ndarray:
         """Return the arm's home joint configuration."""
-        return _HOME_POSE.copy()
+        return self._home_pose.copy()
 
     def reset(self) -> None:
-        self._q_target = _HOME_POSE.copy()
+        self._q_target = self._home_pose.copy()
         self._gripper_open = True
 
     def compute(self) -> None:
@@ -295,7 +276,7 @@ class ManipulationController(BaseController):
             self.model.jnt_dofadr[
                 mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, n)
             ]
-            for n in _ARM_JOINT_NAMES
+            for n in self._arm_spec.joint_names
         ]
 
         # Snapshot physics state — IK only uses forward kinematics
@@ -340,7 +321,7 @@ class ManipulationController(BaseController):
             dq = J_arm.T @ np.linalg.solve(JJT + damp_eye, err)
 
             q = q + self.IK_STEP_SIZE * dq
-            q = np.clip(q, _Q_LO, _Q_HI)
+            q = np.clip(q, self._q_lo, self._q_hi)
 
         # Restore physics state
         self.data.qpos[:] = qpos_save

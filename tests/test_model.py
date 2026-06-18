@@ -10,6 +10,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from controllers.arms import ARMS, DEFAULT_ARM, get_arm_spec
 from controllers.end_effectors import END_EFFECTORS, get_spec
 from scripts.build_model import build_combined_xml
 
@@ -133,14 +134,14 @@ class TestKeyframeReset:
             mujoco.mj_step(model, data)
 
 
-def _load_variant_model(name: str) -> tuple[mujoco.MjModel, str]:
-    """Build an end-effector variant and load it via a scratch file in
+def _load_variant_model(arm: str, end_effector: str) -> tuple[mujoco.MjModel, str]:
+    """Build an arm/end-effector variant and load it via a scratch file in
     models/ so mesh paths (relative to that directory) still resolve --
     from_xml_string has no file-path context for relative asset references.
     """
-    xml = build_combined_xml(name)
+    xml = build_combined_xml(arm, end_effector)
     models_dir = Path(__file__).parent.parent / "models"
-    scratch_path = models_dir / f"_test_scratch_{name}.xml"
+    scratch_path = models_dir / f"_test_scratch_{arm}_{end_effector}.xml"
     scratch_path.write_text(xml, encoding="utf-8")
     try:
         model = mujoco.MjModel.from_xml_path(str(scratch_path))
@@ -152,7 +153,15 @@ def _load_variant_model(name: str) -> tuple[mujoco.MjModel, str]:
 @pytest.fixture(scope="module", params=sorted(END_EFFECTORS))
 def ee_variant_model(request) -> tuple[mujoco.MjModel, str, str]:
     name = request.param
-    model, xml = _load_variant_model(name)
+    model, xml = _load_variant_model(DEFAULT_ARM, name)
+    return model, name, xml
+
+
+@pytest.fixture(scope="module", params=sorted(ARMS))
+def arm_variant_model(request) -> tuple[mujoco.MjModel, str, str]:
+    name = request.param
+    ee_name = get_arm_spec(name).default_end_effector
+    model, xml = _load_variant_model(name, ee_name)
     return model, name, xml
 
 
@@ -190,9 +199,52 @@ class TestEndEffectorVariants:
         assert f"END_EFFECTOR_STAMP: {name}" in xml
 
     def test_franka_nq_equals_35(self):
-        model, _xml = _load_variant_model("franka")
+        model, _xml = _load_variant_model(DEFAULT_ARM, "franka")
         assert model.nq == 35
 
     def test_robotiq_nq_equals_41(self):
-        model, _xml = _load_variant_model("robotiq_2f85")
+        model, _xml = _load_variant_model(DEFAULT_ARM, "robotiq_2f85")
         assert model.nq == 41
+
+
+class TestArmVariants:
+    def test_loads_without_error(self, arm_variant_model):
+        model, _name, _xml = arm_variant_model
+        assert model is not None
+
+    def test_root_body_exists(self, arm_variant_model):
+        model, name, _xml = arm_variant_model
+        spec = get_arm_spec(name)
+        bid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, spec.root_body)
+        assert bid >= 0
+
+    def test_root_body_is_child_of_base_link(self, arm_variant_model):
+        model, name, _xml = arm_variant_model
+        spec = get_arm_spec(name)
+        bl_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "base_link")
+        root_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, spec.root_body)
+        assert model.body_parentid[root_id] == bl_id
+
+    def test_all_arm_joints_exist(self, arm_variant_model):
+        model, name, _xml = arm_variant_model
+        spec = get_arm_spec(name)
+        for joint_name in spec.joint_names:
+            jid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, joint_name)
+            assert jid >= 0, f"{joint_name} not found"
+
+    def test_home_keyframe_exists(self, arm_variant_model):
+        model, _name, _xml = arm_variant_model
+        kid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_KEY, "home")
+        assert kid >= 0
+
+    def test_stamp_matches(self, arm_variant_model):
+        _model, name, xml = arm_variant_model
+        assert f"ARM_STAMP: {name}" in xml
+
+    def test_kinova_nq_equals_41(self):
+        model, _xml = _load_variant_model("kinova_gen3", "robotiq_2f85")
+        assert model.nq == 41
+
+    def test_kinova_franka_combo_rejected(self):
+        with pytest.raises(ValueError):
+            build_combined_xml("kinova_gen3", "franka")

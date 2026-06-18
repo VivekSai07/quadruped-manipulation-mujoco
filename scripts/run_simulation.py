@@ -1,15 +1,17 @@
 """
-Main entry point for Go2+Panda loco-manipulation simulation.
+Main entry point for Go2 + swappable-arm loco-manipulation simulation.
 
 Usage:
     python scripts/run_simulation.py
     python scripts/run_simulation.py --config configs/default.yaml
     python scripts/run_simulation.py --no-viewer        (headless, no output)
-    python scripts/run_simulation.py --record           (headless, saves simulation_recording.mp4)
+    python scripts/run_simulation.py --record           (headless, auto-named video in media/)
     python scripts/run_simulation.py --record --duration 30
+    python scripts/run_simulation.py --arm kinova_gen3
 
 The script:
-  1. Loads the combined MJCF model
+  1. Loads the combined MJCF model (rebuilding it if the cached model was
+     built for a different arm/end-effector combo)
   2. Resets to keyframe "home"
   3. Runs the ReachTask controller
   4. Displays via MuJoCo passive viewer, runs headless, or records to MP4
@@ -34,20 +36,27 @@ import yaml
 # Allow imports from project root
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from controllers.arms import ARMS, DEFAULT_ARM, get_arm_spec, validate_combo
 from controllers.end_effectors import DEFAULT_END_EFFECTOR, END_EFFECTORS, get_spec
 from tasks.reach_task import ReachTask
 
-_STAMP_RE = re.compile(r"END_EFFECTOR_STAMP:\s*(\S+)")
+_ARM_STAMP_RE = re.compile(r"ARM_STAMP:\s*(\S+)")
+_EE_STAMP_RE = re.compile(r"END_EFFECTOR_STAMP:\s*(\S+)")
 
 
-def _model_stamp(model_path: str) -> str | None:
-    """Return the end_effector name baked into models/combined.xml, or None
-    if the file is missing or has no stamp comment."""
+def _model_stamps(model_path: str) -> tuple[str | None, str | None]:
+    """Return the (arm, end_effector) names baked into models/combined.xml,
+    or (None, None) if the file is missing or has no stamp comments."""
     path = Path(model_path)
     if not path.exists():
-        return None
-    match = _STAMP_RE.search(path.read_text(encoding="utf-8"))
-    return match.group(1) if match else None
+        return None, None
+    text = path.read_text(encoding="utf-8")
+    arm_match = _ARM_STAMP_RE.search(text)
+    ee_match = _EE_STAMP_RE.search(text)
+    return (
+        arm_match.group(1) if arm_match else None,
+        ee_match.group(1) if ee_match else None,
+    )
 
 
 def parse_args() -> argparse.Namespace:
@@ -55,9 +64,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--config", default="configs/default.yaml", help="Config YAML path")
     p.add_argument("--no-viewer", action="store_true", help="Run headless (no GUI, no video)")
     p.add_argument("--record", action="store_true",
-                   help="Record headless simulation to --video-path (overwrites each run)")
-    p.add_argument("--video-path", default="simulation_recording.mp4",
-                   help="Output video file (default: simulation_recording.mp4)")
+                   help="Record headless simulation to --video-path (auto-named if omitted)")
+    p.add_argument("--video-path", default=None,
+                   help="Output video file (default: auto-named media/simulation_recording_<arm>_<end-effector>.mp4, "
+                        "non-clobbering)")
     p.add_argument("--record-fps", type=int, default=30,
                    help="Video frame rate (default: 30)")
     p.add_argument("--record-width", type=int, default=1280,
@@ -67,13 +77,33 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--duration", type=float, default=None, help="Override max duration (s)")
     p.add_argument("--build-model", action="store_true",
                    help="Rebuild combined.xml before running")
-    p.add_argument("--end-effector", choices=sorted(END_EFFECTORS), default=DEFAULT_END_EFFECTOR,
-                   help=f"End-effector to mount on the Panda wrist (default: {DEFAULT_END_EFFECTOR})")
+    p.add_argument("--arm", choices=sorted(ARMS), default=DEFAULT_ARM,
+                   help=f"Arm to mount on the Go2 trunk (default: {DEFAULT_ARM})")
+    p.add_argument("--end-effector", choices=sorted(END_EFFECTORS), default=None,
+                   help="End-effector to mount on the arm's wrist "
+                        "(default: the chosen arm's default end-effector)")
     return p.parse_args()
 
 
 def load_config(path: str) -> dict:
     return yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+
+
+def _resolve_video_path(requested: str | None, arm: str, end_effector: str) -> str:
+    """Return the video output path: passed through verbatim if the user
+    requested one explicitly, otherwise auto-named from arm/end-effector and
+    never overwriting an existing file (increments a numeric suffix)."""
+    if requested is not None:
+        return requested
+    media_dir = Path("media")
+    media_dir.mkdir(parents=True, exist_ok=True)
+    stem = f"simulation_recording_{arm}_{end_effector}"
+    candidate = media_dir / f"{stem}.mp4"
+    n = 2
+    while candidate.exists():
+        candidate = media_dir / f"{stem}_{n}.mp4"
+        n += 1
+    return str(candidate)
 
 
 def setup_viewer(model: mujoco.MjModel, data: mujoco.MjData, cfg: dict) -> Any:
@@ -133,7 +163,9 @@ def run_recorded(
 ) -> bool:
     """Run headless and encode every frame to an MP4 via OpenCV.
 
-    Always overwrites video_path so repeated runs produce a single file.
+    Always overwrites video_path as given -- non-clobbering auto-naming
+    (when the caller didn't request a specific path) is the caller's
+    responsibility, via _resolve_video_path().
     """
     try:
         import cv2
@@ -219,13 +251,17 @@ def main() -> int:
     model_path = cfg["simulation"]["model_path"]
     max_duration = args.duration or cfg["simulation"].get("max_duration", 45.0)
 
+    effective_ee = args.end_effector or get_arm_spec(args.arm).default_end_effector
+    validate_combo(args.arm, effective_ee)
+
     # Rebuild model XML if explicitly requested, or if the cached model was
-    # built for a different end-effector (or doesn't exist / has no stamp).
-    current_stamp = _model_stamp(model_path)
-    if args.build_model or current_stamp != args.end_effector:
-        print(f"Rebuilding model for end-effector '{args.end_effector}'...")
+    # built for a different arm/end-effector combo (or doesn't exist / has
+    # no stamps).
+    current_arm_stamp, current_ee_stamp = _model_stamps(model_path)
+    if args.build_model or current_arm_stamp != args.arm or current_ee_stamp != effective_ee:
+        print(f"Rebuilding model for arm '{args.arm}' + end-effector '{effective_ee}'...")
         from scripts.build_model import main as build_main  # noqa: PLC0415
-        build_main(end_effector=args.end_effector)
+        build_main(arm=args.arm, end_effector=effective_ee)
 
     print(f"Loading model: {model_path}")
     try:
@@ -245,11 +281,12 @@ def main() -> int:
     else:
         print("WARNING: 'home' keyframe not found -- using default pose")
 
-    task = ReachTask(model, data, cfg, end_effector=args.end_effector)
+    task = ReachTask(model, data, cfg, arm=args.arm, end_effector=effective_ee)
 
     print(f"\n{'='*60}")
-    print("Go2 + Franka Panda Loco-Manipulation Demo")
-    print(f"  End-effector: {get_spec(args.end_effector).display_name}")
+    print("Go2 Loco-Manipulation Demo")
+    print(f"  Arm: {get_arm_spec(args.arm).display_name}")
+    print(f"  End-effector: {get_spec(effective_ee).display_name}")
     print(f"  Model: nq={model.nq}, nu={model.nu}, nbody={model.nbody}")
     print(f"  Total mass: {sum(model.body_mass):.2f} kg")
     print(f"  Task: Walk to cube at {cfg['task']['cube_pos']}, reach with arm")
@@ -258,12 +295,13 @@ def main() -> int:
     print(f"{'='*60}\n")
 
     if args.record:
+        video_path = _resolve_video_path(args.video_path, args.arm, effective_ee)
         success = run_recorded(
             model, data, task, max_duration, cfg,
             fps=args.record_fps,
             width=args.record_width,
             height=args.record_height,
-            video_path=args.video_path,
+            video_path=video_path,
         )
     elif args.no_viewer:
         success = run_headless(model, data, task, max_duration)

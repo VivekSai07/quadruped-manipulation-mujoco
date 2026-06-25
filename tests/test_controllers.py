@@ -1,6 +1,7 @@
 """Tests for locomotion and manipulation controllers."""
 from __future__ import annotations
 
+import math
 import sys
 from pathlib import Path
 
@@ -87,6 +88,68 @@ class TestLocomotionController:
         for _ in range(50):
             loco.compute()
             mujoco.mj_step(m, d2)
+
+    def test_base_yaw_returns_float_in_range(self, model_data):
+        m, d = model_data
+        loco = LocomotionController(m, d)
+        yaw = loco.base_yaw()
+        assert isinstance(yaw, float)
+        assert -math.pi <= yaw <= math.pi
+        assert abs(yaw) < 0.05, "robot should spawn facing +X (yaw ~ 0)"
+
+    def test_zero_heading_and_full_speed_matches_legacy_trot(self, model_data):
+        """Defaults (no set_heading/set_speed_scale call) must reproduce the
+        pre-turning trot output exactly -- this pins the regression guard."""
+        m, d = model_data
+        loco = LocomotionController(m, d)
+        q_des = loco._trot_joint_targets(1.23, 0.8)
+
+        legacy = np.array([
+            0.006, 0.609, -1.218, -0.006, 0.609, -1.218,
+            0.006, 0.609, -1.218, -0.006, 0.609, -1.218,
+        ])
+        phi = (2.0 * math.pi * 1.23) / loco.GAIT_PERIOD
+        phases = [0.0, math.pi, math.pi, 0.0]
+        for i, phase_off in enumerate(phases):
+            phi_leg = phi + phase_off
+            sin_val = math.sin(phi_leg)
+            legacy[3 * i + 1] -= 0.8 * 0.15 * sin_val
+            legacy[3 * i + 2] -= 0.8 * 0.20 * sin_val
+            legacy[3 * i + 0] += 0.8 * 0.04 * math.cos(phi_leg)
+
+        np.testing.assert_allclose(q_des, legacy)
+
+    def test_set_speed_scale_clamped(self, model_data):
+        m, d = model_data
+        loco = LocomotionController(m, d)
+        loco.set_speed_scale(-1.0)
+        assert loco._speed_scale == 0.0
+        loco.set_speed_scale(2.0)
+        assert loco._speed_scale == 1.0
+
+    def test_set_heading_turns_robot_toward_target(self, model_data):
+        m, d = model_data
+        d2 = mujoco.MjData(m)
+        kid = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_KEY, "home")
+        mujoco.mj_resetDataKeyframe(m, d2, kid)
+        mujoco.mj_forward(m, d2)
+        loco = LocomotionController(m, d2)
+        loco.set_mode(GaitMode.TROT)
+
+        target_yaw = math.pi / 2
+        yaw_before = loco.base_yaw()
+        loco.set_heading(target_yaw)
+        for _ in range(400):
+            loco.compute()
+            mujoco.mj_step(m, d2)
+        yaw_after = loco.base_yaw()
+
+        err_before = abs(math.atan2(math.sin(target_yaw - yaw_before), math.cos(target_yaw - yaw_before)))
+        err_after = abs(math.atan2(math.sin(target_yaw - yaw_after), math.cos(target_yaw - yaw_after)))
+        assert err_after < err_before, (
+            f"heading error should shrink when turning toward target "
+            f"(before={err_before:.3f}, after={err_after:.3f})"
+        )
 
 
 class TestManipulationController:

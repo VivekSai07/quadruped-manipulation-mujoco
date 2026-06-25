@@ -291,8 +291,28 @@ class TaskCoordinator:
 
         elif state == TaskState.WALKING:
             self._refresh_cube_pos()
-            if self._base_xy_distance_to_cube() < self._stop_distance:
+            dist = self._base_xy_distance_to_cube()
+
+            base_xy = self.loco.base_position()[:2]
+            cube_xy = self._cube_pos[:2]
+            bearing = math.atan2(cube_xy[1] - base_xy[1], cube_xy[0] - base_xy[0])
+            self.loco.set_heading(bearing)
+
+            # Slow down only in the final approach, not across the whole walk --
+            # stop_distance is already a wide clearance buffer (0.65 m default),
+            # so ramping over 2x that would dominate total walk time for a short
+            # walk. A fixed 0.3 m final-approach margin keeps the ramp local to
+            # the actual stop point regardless of total distance walked.
+            slow_zone = self._stop_distance + 0.3
+            if dist < slow_zone:
+                frac = max(0.0, (dist - self._stop_distance) / (slow_zone - self._stop_distance))
+                self.loco.set_speed_scale(0.5 + 0.5 * frac)  # floor at 0.5, never fully stall
+            else:
+                self.loco.set_speed_scale(1.0)
+
+            if dist < self._stop_distance:
                 self.loco.set_mode(GaitMode.STAND)
+                self.loco.clear_heading()
                 self._stop_since = t
                 self._transition(TaskState.STOPPING, t)
 

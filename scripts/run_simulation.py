@@ -82,6 +82,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--end-effector", choices=sorted(END_EFFECTORS), default=None,
                    help="End-effector to mount on the arm's wrist "
                         "(default: the chosen arm's default end-effector)")
+    p.add_argument("--cube-pos", type=float, nargs=3, default=None, metavar=("X", "Y", "Z"),
+                   help="Override the cube's spawn position (relocates the physical cube "
+                        "body, not just config -- the model XML hardcodes its default "
+                        "position). Useful for demonstrating off-axis WALKING/turning; the "
+                        "cube may be off the worktable so the later pick-and-place phases "
+                        "are not guaranteed to complete.")
     return p.parse_args()
 
 
@@ -280,6 +286,14 @@ def main() -> int:
         print(f"Reset to keyframe 'home'")
     else:
         print("WARNING: 'home' keyframe not found -- using default pose")
+
+    if args.cube_pos is not None:
+        cube_jid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "cube_joint")
+        cube_qadr = int(model.jnt_qposadr[cube_jid])
+        data.qpos[cube_qadr:cube_qadr + 3] = args.cube_pos
+        mujoco.mj_forward(model, data)
+        cfg["task"]["cube_pos"] = list(args.cube_pos)
+        print(f"Relocated cube to {args.cube_pos}")
 
     task = ReachTask(model, data, cfg, arm=args.arm, end_effector=effective_ee)
 

@@ -11,6 +11,9 @@ Both arms support the stock Franka two-finger gripper or a vendored Robotiq 2F-8
 🎥 **Simulation Recording:**  
 [Watch the demo video](https://github.com/VivekSai07/quadruped-manipulation-mujoco/blob/main/media/simulation_recording.mp4)
 
+🎥 **Locomotion turning + full pick-and-place** (off-axis cube, see `--cube-pos` above):  
+[Watch the turning demo](https://github.com/VivekSai07/quadruped-manipulation-mujoco/blob/main/media/locomotion_turning_complete.mp4)
+
 ---
 
 ## Architecture
@@ -45,6 +48,7 @@ Key engineering decisions:
 | Jerky arm motion between states | Velocity IK (one Jacobian step per physics timestep) instead of periodic batch IK; intermediate Cartesian target interpolated at 10 cm/s |
 | Go2 too tall for arm workspace | Adaptive height: `crouch_alpha` computed from horizontal reach and vertical reach below base, blends stand/crouch poses without hardcoded thresholds |
 | Arm stuck at home after placing | `RETURNING_HOME` state advances a commanded joint target at 1.5 rad/s (independent of PD lag) until arm reaches home pose |
+| Go2 could only walk straight ahead | `WALKING` now computes bearing-to-cube every step and steers via differential left/right trot stride (`LocomotionController.set_heading()`), with speed ramped down only in the final approach (`set_speed_scale()`) |
 
 ---
 
@@ -88,6 +92,10 @@ python scripts/run_simulation.py --record --video-path demo.mp4 --record-width 1
 
 # Force a rebuild even if the cached model already matches the requested combo
 python scripts/run_simulation.py --build-model
+
+# Demo the locomotion turning: relocate the cube off-axis (still on the
+# worktable, so the full pick-and-place still completes) and record it
+python scripts/run_simulation.py --cube-pos 1.6 0.32 0.325 --no-viewer --record --video-path media/locomotion_turning_complete.mp4 --duration 45
 ```
 
 > Note: do not pass `--duration 30` when recording — the task takes ~34 s. Omit `--duration` to use the config default (150 s); the simulation stops automatically when `DONE` is reached.
@@ -96,6 +104,8 @@ python scripts/run_simulation.py --build-model
 >
 
 > Note: Kinova Gen3 only supports the Robotiq 2F-85 gripper — `--arm kinova_gen3 --end-effector franka` raises a `ValueError` before touching any files.
+>
+> Note: `--cube-pos` relocates the *physical* cube (the worktable/plate stay fixed, so keep the cube within roughly `x∈[1.36,1.84], y∈[-0.33,0.33]` relative to the table to stay on its surface — see [Robot Model](#robot-model)). Outside that range the cube falls to the ground and only the WALKING/turning portion is meaningful; the pick-and-place phases won't complete. A config-only `task.cube_pos` override does **not** move the cube (it's hardcoded in the compiled model) — `--cube-pos` is the only way to actually relocate it.
 
 ### 4. Run tests
 
@@ -103,7 +113,7 @@ python scripts/run_simulation.py --build-model
 pytest tests/ -v
 ```
 
-81 tests covering model integrity, controller math, stability, full task integration, arm/end-effector variant combinations, and CLI helpers.
+86 tests covering model integrity, controller math, stability, full task integration, arm/end-effector variant combinations, CLI helpers, and locomotion turning/speed control.
 
 ---
 
@@ -219,6 +229,18 @@ loco.set_crouch_alpha(alpha)  # blends _STAND_POSE and _CROUCH_POSE
 ```
 
 For the default scenario (cube 64 cm away, 5 cm below base): `alpha ≈ 0.24` → ~4 cm lower stance.
+
+### Locomotion Turning
+
+`WALKING` computes the bearing to the cube every step and steers the trot gait toward it via differential left/right stride amplitude (skid-steer style), instead of always walking straight in the body's local +X frame:
+
+```python
+bearing = atan2(cube_y - base_y, cube_x - base_x)
+loco.set_heading(bearing)           # turns toward bearing every physics step
+loco.set_speed_scale(scale)         # ramps stride amplitude down in the final approach
+```
+
+`base_yaw()` reads heading from the freejoint quaternion; `set_heading()` clips the proportional heading-error correction to `±1.0 rad/s` and applies it as a stride-amplitude scale on the right/left leg pairs (FR+RR vs. FL+RL). With zero heading error and full speed (the default demo's straight-ahead cube), this reduces to the original unmodified trot — no behavior change for the existing demo.
 
 ### Physics Settings
 

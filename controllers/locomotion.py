@@ -46,6 +46,10 @@ _ACTUATOR_NAMES = [
     "RL_hip", "RL_thigh", "RL_calf",
 ]
 
+
+def _wrap_to_pi(angle: float) -> float:
+    return float(math.atan2(math.sin(angle), math.cos(angle)))
+
 # Default standing pose: [hip_ab, hip, knee] × 4 legs (FR, FL, RR, RL)
 # From unitree_mujoco stand_go2.py example
 _STAND_POSE = np.array([
@@ -89,6 +93,10 @@ class LocomotionController(BaseController):
     STRIDE_X: float = 0.10         # half stride length (m) — forward displacement
     _WALK_RAMP: float = 3.0        # seconds to ramp to full stride at walk start
 
+    # Turning parameters
+    _MAX_YAW_RATE: float = 1.0     # rad/s — clamps turn aggressiveness
+    _TURN_GAIN: float = 1.2        # proportional heading-error gain
+
     def __init__(
         self,
         model: mujoco.MjModel,
@@ -104,6 +112,9 @@ class LocomotionController(BaseController):
         self._stand_t0: float = 0.0
         self._stand_ramp: float = 2.0  # seconds to ramp to stand from lie-down
         self._crouch_alpha: float = 0.0  # 0 = full stand, 1 = full crouch
+        self._target_yaw: float = 0.0
+        self._heading_active: bool = False
+        self._speed_scale: float = 1.0
 
         # Cached actuator + joint DOF addresses (resolved once at init)
         self._act_ids = [
@@ -133,6 +144,22 @@ class LocomotionController(BaseController):
         Clamped to [0, 1]. Takes effect immediately via the PD stand controller.
         """
         self._crouch_alpha = float(np.clip(alpha, 0.0, 1.0))
+
+    def set_heading(self, target_yaw: float) -> None:
+        """Steer the trot gait toward target_yaw (world-frame, rad). Safe to
+        call every physics step — heading error is recomputed fresh each call."""
+        self._target_yaw = float(target_yaw)
+        self._heading_active = True
+
+    def clear_heading(self) -> None:
+        """Disable turning; trot resumes straight-ahead (legacy behavior)."""
+        self._heading_active = False
+
+    def set_speed_scale(self, scale: float) -> None:
+        """Scale trot stride amplitude in [0, 1]. 1.0 = full nominal stride
+        (current/legacy speed), 0.0 = minimal in-place stepping. GAIT_PERIOD
+        (cadence) is untouched to avoid phase-continuity issues."""
+        self._speed_scale = float(np.clip(scale, 0.0, 1.0))
 
     def reset(self) -> None:
         self._mode = GaitMode.STAND
@@ -193,19 +220,40 @@ class LocomotionController(BaseController):
         # FR=0, FL=π, RR=π, RL=0  (diagonal pairs)
         phases = [0.0, math.pi, math.pi, 0.0]  # FR, FL, RR, RL
 
+        # Differential left/right stride for turning (skid-steer style):
+        # heading error > 0 means target is CCW (left) of current heading,
+        # so the right-side legs (FR, RR) get a larger stride and the
+        # left-side legs (FL, RL) get a smaller one to rotate the body CCW
+        # (empirically verified by test_set_heading_turns_robot_toward_target
+        # -- the opposite sign made heading error grow instead of shrink).
+        # Index order matches _JOINT_NAMES/_ACTUATOR_NAMES (FR, FL, RR, RL).
+        if self._heading_active:
+            yaw_err = _wrap_to_pi(self._target_yaw - self.base_yaw())
+            turn_cmd = float(np.clip(self._TURN_GAIN * yaw_err, -self._MAX_YAW_RATE, self._MAX_YAW_RATE))
+        else:
+            turn_cmd = 0.0
+        turn_norm = turn_cmd / self._MAX_YAW_RATE if self._MAX_YAW_RATE > 0 else 0.0
+        side_scale = {
+            0: 1.0 + turn_norm,  # FR (right)
+            1: 1.0 - turn_norm,  # FL (left)
+            2: 1.0 + turn_norm,  # RR (right)
+            3: 1.0 - turn_norm,  # RL (left)
+        }
+
         q_des = _STAND_POSE.copy()
 
         for i, phase_off in enumerate(phases):
             phi_leg = phi + phase_off
             sin_val = math.sin(phi_leg)
+            amp = ramp * self._speed_scale * side_scale[i]
 
             # +thigh angle = foot moves backward; negate so swing (sin>0) reaches forward
-            q_des[3 * i + 1] = _STAND_POSE[3 * i + 1] - ramp * 0.15 * sin_val
+            q_des[3 * i + 1] = _STAND_POSE[3 * i + 1] - amp * 0.15 * sin_val
 
             # Flex knee during swing (subtract → more negative = foot lifts), extend during stance
-            q_des[3 * i + 2] = _STAND_POSE[3 * i + 2] - ramp * 0.20 * sin_val
+            q_des[3 * i + 2] = _STAND_POSE[3 * i + 2] - amp * 0.20 * sin_val
 
-            # Hip abduction: lateral sway for balance
+            # Hip abduction: lateral sway for balance (unchanged by turning/speed)
             q_des[3 * i + 0] = _STAND_POSE[3 * i + 0] + ramp * 0.04 * math.cos(phi_leg)
 
         return q_des
@@ -237,3 +285,11 @@ class LocomotionController(BaseController):
     def base_position(self) -> np.ndarray:
         """Base position in world frame (3-vector)."""
         return self.data.qpos[0:3].copy()
+
+    def base_yaw(self) -> float:
+        """Return Go2 base heading (yaw, rad) about world +Z, in [-pi, pi].
+        Derived from the freejoint quaternion qpos[3:7] = [w, x, y, z];
+        robust to roll/pitch during trotting since only the Z component
+        is extracted."""
+        w, x, y, z = self.data.qpos[3:7]
+        return math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))

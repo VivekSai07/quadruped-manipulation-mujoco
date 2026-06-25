@@ -42,3 +42,6 @@ graphify-out/
 
 archieve/
 docs/
+
+# Auto-generated onboarding guide (local, not for the repo)
+ONBOARDING.md

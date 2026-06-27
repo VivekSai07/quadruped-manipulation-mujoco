@@ -226,13 +226,13 @@ class TaskCoordinator:
                     self._transition(TaskState.ADJUSTING_HEIGHT, t)
                 else:
                     # No meaningful height adjustment --proceed directly
-                    self._active_task.seed_approach()
+                    self._active_task.seed_approach(t)
                     self._transition(TaskState.MANIPULATING, t)
 
         elif state == TaskState.ADJUSTING_HEIGHT:
             # Wait for the new stance to settle
             if t - self._state_enter_time >= self._height_settle_time:
-                self._active_task.seed_approach()
+                self._active_task.seed_approach(t)
                 self._transition(TaskState.MANIPULATING, t)
 
         elif state == TaskState.MANIPULATING:
@@ -258,7 +258,7 @@ class TaskCoordinator:
                 next_task = self._active_task.next_task()
                 if next_task is not None:
                     self._active_task = next_task
-                    self._active_task.seed_approach()
+                    self._active_task.seed_approach(t)
                     self._transition(TaskState.WALKING, t)
                 else:
                     self._transition(TaskState.DONE, t)

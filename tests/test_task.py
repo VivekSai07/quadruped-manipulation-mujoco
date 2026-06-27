@@ -14,6 +14,7 @@ import yaml
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from controllers.coordinator import TaskCoordinator, TaskState  # noqa: F401
+from tasks.pick_and_place import PickAndPlaceTask
 from tasks.reach_task import ReachTask
 
 MODEL_PATH = str(Path(__file__).parent.parent / "models" / "combined.xml")
@@ -128,3 +129,93 @@ class TestWalkingTurnsTowardOffAxisCube:
             "WALKING should steer base_yaw toward the off-axis cube's bearing "
             f"(target={target_yaw:.3f}, before={yaw_before:.3f}, after={yaw_after:.3f})"
         )
+
+
+class TestSeedApproachSeedsPhaseEnterTime:
+    """Regression test for the MANIPULATING-entry bug: `seed_approach()` used
+    to only seed `_arm_interp_target`, leaving `_phase_enter_time` at its
+    `__init__` default of 0.0 (APPROACHING is never reached via `_set_phase()`
+    -- it's the initial phase). On the very first `manip_step` call, `elapsed
+    = t - self._phase_enter_time` then evaluated to the absolute sim time `t`
+    instead of true time-in-phase, silently bypassing the `min_approach_time`
+    floor whenever the EE happened to already be within `approach_threshold`
+    of the approach waypoint at MANIPULATING-entry time.
+
+    This test constructs exactly that scenario: the cube/target are placed so
+    that the approach waypoint coincides with the arm's home-pose EE position
+    -- i.e. `ee_distance_to(wp_approach) == 0 < approach_threshold` from the
+    very first `manip_step` call, with no IK convergence needed. If
+    `seed_approach` does not seed `_phase_enter_time = t`, the very first
+    `manip_step` call incorrectly transitions APPROACHING -> DESCENDING
+    immediately (confirmed by manually reproducing the pre-fix code path)."""
+
+    def _build_task_with_ee_at_approach_waypoint(
+        self, cfg
+    ) -> tuple[PickAndPlaceTask, mujoco.MjModel, mujoco.MjData, "ManipulationController"]:
+        m = mujoco.MjModel.from_xml_path(MODEL_PATH)
+        d = mujoco.MjData(m)
+        kid = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_KEY, "home")
+        mujoco.mj_resetDataKeyframe(m, d, kid)
+        mujoco.mj_forward(m, d)
+
+        from controllers.manipulation import ManipulationController  # noqa: PLC0415
+
+        manip = ManipulationController(m, d)
+        ee_home = manip.ee_position().copy()
+
+        # Place the cube directly below the home-pose EE position by the
+        # hover height (_HOVER_Z=0.15) so wp_approach == cz+hover == ee_home,
+        # with zero IK travel needed -- dist is exactly 0 at construction time.
+        hover_z = 0.15
+        ftp_offset = manip._ee_spec.ftp_offset
+        cube_pos = [float(ee_home[0]), float(ee_home[1]), float(ee_home[2] - hover_z)]
+        target_pos = [float(ee_home[0]) + 0.3, float(ee_home[1]), float(ee_home[2] - hover_z) + 0.006]
+
+        task_cfg = dict(cfg["task"])
+        task = PickAndPlaceTask(cube_pos, target_pos, m, d, manip, ftp_offset, task_cfg)
+        return task, m, d, manip
+
+    def test_seed_approach_sets_phase_enter_time_to_t(self, cfg):
+        """seed_approach(t) must seed _phase_enter_time, not leave it at 0.0."""
+        task, _m, _d, _manip = self._build_task_with_ee_at_approach_waypoint(cfg)
+        assert task._phase_enter_time == 0.0  # __init__ default, pre-seed
+
+        late_t = 42.0
+        task.seed_approach(late_t)
+        assert task._phase_enter_time == late_t
+
+    def test_min_approach_time_floor_holds_when_ee_starts_at_waypoint(self, cfg):
+        """Even when the EE is already exactly at the approach waypoint at
+        MANIPULATING-entry time (dist=0 < approach_threshold), the task must
+        not transition out of APPROACHING before min_approach_time has
+        genuinely elapsed since entry. Before the fix this transitioned on
+        the very first manip_step call regardless of min_approach_time,
+        because `elapsed` was computed against absolute sim time (t - 0.0)
+        instead of time-since-entry."""
+        task, m, _d, manip = self._build_task_with_ee_at_approach_waypoint(cfg)
+        assert manip.ee_distance_to(task._wp_approach) < task._approach_threshold
+
+        entry_t = 50.0  # arbitrary late, non-zero absolute sim time
+        task.seed_approach(entry_t)
+
+        dt = m.opt.timestep
+        # Step for well under min_approach_time and confirm we have NOT left
+        # APPROACHING -- this is the floor the bug silently bypassed.
+        steps_before_floor = max(1, int((task._min_approach_time * 0.5) / dt))
+        t = entry_t
+        for _ in range(steps_before_floor):
+            t += dt
+            task.manip_step(coordinator=None, t=t, dt=dt)
+
+        assert task.phase == PickAndPlaceTask.Phase.APPROACHING, (
+            "APPROACHING ended before min_approach_time elapsed since entry -- "
+            "_phase_enter_time was not seeded correctly by seed_approach()"
+        )
+
+        # And once min_approach_time genuinely has elapsed (with the EE still
+        # at the waypoint), the transition to DESCENDING does occur --
+        # confirms the floor is a real gate, not something permanently stuck.
+        for _ in range(steps_before_floor + 5):
+            t += dt
+            task.manip_step(coordinator=None, t=t, dt=dt)
+        assert task.phase == PickAndPlaceTask.Phase.DESCENDING

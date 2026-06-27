@@ -159,10 +159,23 @@ class PickAndPlaceTask(Task):
             self._arm_interp_target += delta / dist * step
         return self._arm_interp_target
 
-    def seed_approach(self) -> None:
+    def seed_approach(self, t: float) -> None:
         """Seed the interpolated arm target at the current EE so the first IK
-        step is a zero-length move (no jerk on state entry)."""
+        step is a zero-length move (no jerk on state entry), and seed
+        _phase_enter_time to the current sim time.
+
+        The coordinator enters MANIPULATING (this task's APPROACHING phase)
+        by calling this method rather than via `_set_phase()` -- APPROACHING
+        is the __init__-time default phase, never reached through a normal
+        phase transition. Without seeding `_phase_enter_time` here it stays
+        at its `__init__` default of 0.0, so the first `manip_step` call
+        would compute `elapsed = t - 0.0 = t` (absolute sim time) instead of
+        true time-in-phase, silently bypassing the `min_approach_time` floor.
+        This mirrors what the original coordinator's
+        `_transition(TaskState.APPROACHING, t)` did before this port.
+        """
         self._arm_interp_target = self.manip.ee_position().copy()
+        self._phase_enter_time = t
 
     # ── 6-DOF kinematic attachment ─────────────────────────────────────────
 

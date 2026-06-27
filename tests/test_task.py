@@ -219,3 +219,156 @@ class TestSeedApproachSeedsPhaseEnterTime:
             t += dt
             task.manip_step(coordinator=None, t=t, dt=dt)
         assert task.phase == PickAndPlaceTask.Phase.DESCENDING
+
+
+class TestRegraspFaultRecovery:
+    """Task 3: GRASPING's failure path must retry via REGRASP up to
+    `max_grasp_attempts` before giving up, instead of silently proceeding
+    ungrasped on the very first missed contact.
+
+    `ManipulationController.is_grasped()` (controllers/manipulation.py) is
+    purely contact-physics-based (checks `data.contact` for both fingers
+    touching the cube body), so it cannot be forced false/true by adjusting
+    waypoints without also fighting real contact dynamics. We monkeypatch it
+    directly -- a deterministic, unit-level way to drive the GRASPING/REGRASP
+    branches without depending on contact solver timing.
+    """
+
+    def _build_task_at_grasping(self, cfg):
+        m = mujoco.MjModel.from_xml_path(MODEL_PATH)
+        d = mujoco.MjData(m)
+        kid = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_KEY, "home")
+        mujoco.mj_resetDataKeyframe(m, d, kid)
+        mujoco.mj_forward(m, d)
+
+        from controllers.manipulation import ManipulationController  # noqa: PLC0415
+
+        manip = ManipulationController(m, d)
+        ee_home = manip.ee_position().copy()
+
+        hover_z = 0.15
+        ftp_offset = manip._ee_spec.ftp_offset
+        cube_pos = [float(ee_home[0]), float(ee_home[1]), float(ee_home[2] - hover_z)]
+        target_pos = [float(ee_home[0]) + 0.3, float(ee_home[1]), float(ee_home[2] - hover_z) + 0.006]
+
+        task_cfg = dict(cfg["task"])
+        task = PickAndPlaceTask(cube_pos, target_pos, m, d, manip, ftp_offset, task_cfg)
+
+        # Jump straight to GRASPING, holding at the descend waypoint, as if
+        # DESCENDING had just converged -- this test is about the GRASPING/
+        # REGRASP retry logic, not the earlier approach/descend phases.
+        entry_t = 10.0
+        task._arm_interp_target = task._wp_descend.copy()
+        task._set_phase(PickAndPlaceTask.Phase.GRASPING, entry_t)
+        return task, m, d, manip, entry_t
+
+    @staticmethod
+    def _advance(task, manip, m, d, t, dt) -> tuple[float, bool]:
+        """One full physics tick, mirroring TaskCoordinator.step() + the
+        run_simulation.py main loop: manip_step() (the sub-state machine),
+        then manip.compute() (writes the IK-commanded qpos into ctrl), then
+        mj_step() (actually integrates the PD-controlled actuators), then
+        post_physics_step() (re-applies the kinematic cube lock).
+
+        `reach_position_smooth()` only ever updates `manip._q_target` and
+        leaves `data.qpos` untouched -- physical EE motion only happens once
+        `compute()` + `mj_step()` run. Calling `manip_step()` in a tight loop
+        without this would freeze the EE in place forever (discovered while
+        debugging an infinite REGRASP loop in this test)."""
+        t += dt
+        done = task.manip_step(coordinator=None, t=t, dt=dt)
+        manip.compute()
+        mujoco.mj_step(m, d)
+        task.post_physics_step()
+        return t, done
+
+    def _run_until(self, task, manip, m, d, t0, dt, max_steps=20000, predicate=None):
+        """Advance physics forward until predicate(task) is True or manip_step
+        returns True (done), whichever comes first. Returns (t, done)."""
+        t = t0
+        for _ in range(max_steps):
+            t, done = self._advance(task, manip, m, d, t, dt)
+            if done:
+                return t, True
+            if predicate is not None and predicate(task):
+                return t, False
+        raise AssertionError("manip_step did not satisfy predicate/finish within max_steps")
+
+    def test_failed_grasp_retries_then_succeeds_and_reaches_done(self, cfg, capsys, monkeypatch):
+        """First grasp evaluation fails (no contact) -> logs a retry line and
+        enters REGRASP. Second grasp evaluation (post re-descend) succeeds ->
+        task proceeds through LIFTING..RELEASING and manip_step eventually
+        returns True."""
+        task, m, manip, entry_t = self._build_task_at_grasping(cfg)
+        dt = m.opt.timestep
+
+        grasp_calls = {"count": 0}
+
+        def fake_is_grasped():
+            grasp_calls["count"] += 1
+            # Fail the first evaluation, succeed on the second (the retry).
+            return grasp_calls["count"] >= 2
+
+        monkeypatch.setattr(manip, "is_grasped", fake_is_grasped)
+
+        # Run until REGRASP is entered (first failed attempt).
+        t, done = self._run_until(
+            task, m, entry_t, dt,
+            predicate=lambda tk: tk.phase == PickAndPlaceTask.Phase.REGRASP,
+        )
+        assert not done
+        assert task.phase == PickAndPlaceTask.Phase.REGRASP
+        assert task._grasp_attempts == 1
+
+        out = capsys.readouterr().out
+        assert "Grasp attempt 1 failed" in out
+        assert "retry 2/2" in out
+        assert "Grasp confirmed" not in out
+        assert "WARNING: no contact" not in out
+
+        # Continue stepping: REGRASP re-descends, re-enters GRASPING, second
+        # evaluation succeeds, and the task runs all the way to completion.
+        done_overall = False
+        for _ in range(200000):
+            t += dt
+            if task.manip_step(coordinator=None, t=t, dt=dt):
+                done_overall = True
+                break
+        assert done_overall, "task never reached completion (manip_step never returned True)"
+        assert task._grasp_attempts == 2
+
+        out2 = capsys.readouterr().out
+        assert "Grasp confirmed" in out2
+        assert "WARNING: no contact" not in out2
+
+    def test_exhausted_retries_gives_up_and_still_reaches_done(self, cfg, capsys, monkeypatch):
+        """Grasp never succeeds. With default max_grasp_attempts=2, the task
+        must retry exactly once via REGRASP, then give up (log the existing
+        WARNING line), proceed ungrasped into LIFTING, and still eventually
+        reach completion (manip_step returns True) rather than getting stuck
+        in REGRASP forever."""
+        task, m, manip, entry_t = self._build_task_at_grasping(cfg)
+        dt = m.opt.timestep
+
+        monkeypatch.setattr(manip, "is_grasped", lambda: False)
+
+        done_overall = False
+        t = entry_t
+        for _ in range(300000):
+            t += dt
+            if task.manip_step(coordinator=None, t=t, dt=dt):
+                done_overall = True
+                break
+        assert done_overall, "task never reached completion (manip_step never returned True)"
+
+        # Exactly one retry occurred before giving up: 2 grasp evaluations.
+        assert task._grasp_attempts == 2
+        assert not task._grasp_confirmed
+
+        out = capsys.readouterr().out
+        assert "Grasp attempt 1 failed" in out
+        assert "retry 2/2" in out
+        assert "WARNING: no contact --lifting without lock" in out
+        assert "Grasp confirmed" not in out
+        # Never stuck in REGRASP -- phase must have moved past it.
+        assert task.phase != PickAndPlaceTask.Phase.REGRASP

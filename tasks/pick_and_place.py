@@ -51,6 +51,7 @@ class PickAndPlaceTask(Task):
         APPROACHING  = "approaching"       # EE to hover above cube
         DESCENDING   = "descending"        # EE down to cube level
         GRASPING     = "grasping"          # close gripper, hold for contact
+        REGRASP      = "regrasp"           # re-descend deeper and retry grasp
         LIFTING      = "lifting"           # raise EE with cube
         TRANSPORTING = "transporting"      # move EE+cube above placement plate
         LOWERING     = "lowering"          # lower EE+cube to plate level
@@ -85,6 +86,7 @@ class PickAndPlaceTask(Task):
         self._min_lift_time       = task_cfg.get("min_lift_time",        1.0)
         self._min_transport_time  = task_cfg.get("min_transport_time",   0.8)
         self._min_lower_time      = task_cfg.get("min_lower_time",       1.2)
+        self._max_grasp_attempts  = task_cfg.get("max_grasp_attempts",   2)
 
         # IK waypoints --derived from cube/target; recomputed after WALKING
         self._wp_approach  = None
@@ -104,6 +106,7 @@ class PickAndPlaceTask(Task):
         self._grasp_confirmed: bool = False
         self._grasp_offset:    np.ndarray = np.zeros(3)    # cube_pos - ee_pos
         self._grasp_R_local:   np.ndarray = np.eye(3)      # cube R in EE frame
+        self._grasp_attempts:  int = 0                     # grasp evaluations so far
 
         # Cube freejoint addresses
         cube_jnt_id           = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "cube_joint")
@@ -281,6 +284,7 @@ class PickAndPlaceTask(Task):
             self.manip.reach_position_smooth(self._wp_descend, dt)
             self.manip.set_gripper(open_=False)
             if t - self._phase_enter_time >= self._grasp_hold_duration:
+                self._grasp_attempts += 1
                 if self.manip.is_grasped():
                     ee_pos   = self.manip.ee_position()
                     ee_xmat  = self.data.site_xmat[self.manip._ee_site_id].reshape(3, 3)
@@ -295,12 +299,36 @@ class PickAndPlaceTask(Task):
                         f"  [t={t:.2f}s] Grasp confirmed --6DOF lock engaged "
                         f"(offset={self._grasp_offset.round(4)})"
                     )
+                    self._lift_z_current = float(self.manip.ee_position()[2])
+                    self._set_phase(PickAndPlaceTask.Phase.LIFTING, t)
+                elif self._grasp_attempts < self._max_grasp_attempts:
+                    print(
+                        f"  [t={t:.2f}s] Grasp attempt {self._grasp_attempts} failed "
+                        f"--no contact, re-descending for retry "
+                        f"{self._grasp_attempts + 1}/{self._max_grasp_attempts}"
+                    )
+                    self._set_phase(PickAndPlaceTask.Phase.REGRASP, t)
                 else:
                     self._grasp_confirmed = False
                     print(f"  [t={t:.2f}s] WARNING: no contact --lifting without lock")
+                    self._lift_z_current = float(self.manip.ee_position()[2])
+                    self._set_phase(PickAndPlaceTask.Phase.LIFTING, t)
 
-                self._lift_z_current = float(self.manip.ee_position()[2])
-                self._set_phase(PickAndPlaceTask.Phase.LIFTING, t)
+        elif phase == PickAndPlaceTask.Phase.REGRASP:
+            # Re-descend ~1cm deeper than the previous attempt and retry.
+            retry_target = np.array([
+                self._wp_descend[0],
+                self._wp_descend[1],
+                self._wp_descend[2] - self._grasp_attempts * 0.01,
+            ])
+            current_target = self._step_interp_target(retry_target, dt)
+            self.manip.reach_position_smooth(current_target, dt)
+            elapsed = t - self._phase_enter_time
+            ee_z    = self.manip.ee_position()[2]
+            z_err   = abs(ee_z - retry_target[2])
+            if elapsed >= self._min_descend_time and z_err < self._descend_threshold:
+                self.manip.set_gripper(open_=False)
+                self._set_phase(PickAndPlaceTask.Phase.GRASPING, t)
 
         elif phase == PickAndPlaceTask.Phase.LIFTING:
             if self._grasp_confirmed:

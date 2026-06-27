@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from controllers.coordinator import TaskCoordinator, TaskState  # noqa: F401
 from tasks.pick_and_place import PickAndPlaceTask
 from tasks.reach_task import ReachTask
+from tasks.reach_only import ReachOnlyTask
 
 MODEL_PATH = str(Path(__file__).parent.parent / "models" / "combined.xml")
 CONFIG_PATH = str(Path(__file__).parent.parent / "configs" / "default.yaml")
@@ -410,3 +411,90 @@ class TestRegraspFaultRecovery:
         assert "retry 2/2" in out
         assert "WARNING: no contact --lifting without lock" in out
         assert "Grasp confirmed" not in out
+
+
+class TestReachOnlyTaskReachesDone:
+    """Task 4: ReachOnlyTask is the first concrete Task other than
+    PickAndPlaceTask. Verify a real TaskCoordinator driven with a
+    ReachOnlyTask as the active task reaches DONE through the full
+    WALKING -> STOPPING -> STABILIZING -> ADJUSTING_HEIGHT -> MANIPULATING
+    -> RETURNING_HOME -> DONE pipeline, without ever entering any
+    grasp-related phase -- structurally true because ReachOnlyTask defines
+    no Phase enum and no grasp/lift/transport/lower sub-machinery at all,
+    unlike PickAndPlaceTask. There is nothing to "enter."
+
+    Construction wrinkle (see task-4-brief.md): ReachOnlyTask needs a
+    ManipulationController instance at construction time, but
+    TaskCoordinator.__init__ always builds its own. We use option (b) from
+    the brief: construct the TaskCoordinator first (gets a default,
+    discarded PickAndPlaceTask), then build ReachOnlyTask using the
+    coordinator's own `coord.manip`, then rebind `coord._active_task`
+    directly before stepping -- this guarantees the task and the
+    coordinator share exactly one ManipulationController instance.
+    """
+
+    def test_reach_only_task_reaches_done_without_grasp_phase(self, cfg):
+        m = mujoco.MjModel.from_xml_path(MODEL_PATH)
+        d = mujoco.MjData(m)
+        kid = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_KEY, "home")
+        mujoco.mj_resetDataKeyframe(m, d, kid)
+        mujoco.mj_forward(m, d)
+
+        coord = TaskCoordinator(m, d, cfg)
+
+        # Pick a target point walkable-distance from the robot's start,
+        # similar order of magnitude to the default cube_pos [1.6, 0, 0.325],
+        # so WALKING/STOPPING/STABILIZING/ADJUSTING_HEIGHT all behave
+        # normally rather than exercising manip_step() in isolation.
+        target_point = [1.6, 0.0, 0.45]
+        task = ReachOnlyTask(target_point, m, d, coord.manip, cfg["task"])
+
+        # Structural proof there is no grasp-related phase to enter: unlike
+        # PickAndPlaceTask, ReachOnlyTask exposes no `phase` property and no
+        # Phase enum at all.
+        assert not hasattr(task, "phase")
+        assert not hasattr(ReachOnlyTask, "Phase")
+
+        coord._active_task = task
+
+        dt = m.opt.timestep
+        max_duration = 110.0  # generous vs. pick-and-place's ~67s full demo;
+        # reach-only skips descend/grasp/lift/transport/lower/release
+        n_steps = int(max_duration / dt)
+
+        reached_done = False
+        success_at_manip_end: bool | None = None
+        for i in range(n_steps):
+            t = d.time
+            was_manipulating = coord.state == TaskState.MANIPULATING
+            coord.step(t, dt)
+            mujoco.mj_step(m, d)
+
+            # The active task must never be swapped away from our
+            # ReachOnlyTask instance -- confirms MANIPULATING never delegated
+            # to any other sub-machinery (there is none to delegate to).
+            assert coord.active_task is task
+
+            # Capture is_success() right as MANIPULATING hands off to
+            # RETURNING_HOME -- the EE is still at the target at that exact
+            # moment (mirrors what the coordinator itself checks internally,
+            # controllers/coordinator.py's MANIPULATING branch). Once
+            # RETURNING_HOME starts driving the arm back to home, the EE
+            # necessarily leaves the target, so is_success() would (rightly)
+            # go False later -- that is not a regression, it's RETURNING_HOME
+            # doing its job.
+            if was_manipulating and coord.state == TaskState.RETURNING_HOME:
+                success_at_manip_end = task.is_success()
+
+            if coord.is_done:
+                reached_done = True
+                break
+
+        assert reached_done, (
+            f"Coordinator did not reach DONE within {max_duration:.1f}s "
+            f"(stuck in state={coord.state.value})"
+        )
+        assert coord.state == TaskState.DONE
+        assert success_at_manip_end is True, (
+            "EE did not genuinely reach the target point at MANIPULATING completion"
+        )

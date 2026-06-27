@@ -40,7 +40,7 @@ for step in range(n_steps):
         status = task.coordinator.status_line(t)
         print(status)
 
-        dist = task.coordinator._base_xy_distance_to_cube()
+        dist = task.coordinator._base_xy_distance_to_target()
         state = task.coordinator.state.value
         if prev_dist is not None and state == "walking" and dist < prev_dist - 0.005:
             motion_confirmed = True

@@ -58,10 +58,8 @@ class TestTaskCoordinator:
         assert task.coordinator.state in (
             TaskState.STANDING, TaskState.WALKING,
             TaskState.STOPPING, TaskState.STABILIZING,
-            TaskState.APPROACHING, TaskState.DESCENDING,
-            TaskState.GRASPING, TaskState.LIFTING,
-            TaskState.TRANSPORTING, TaskState.LOWERING,
-            TaskState.RELEASING, TaskState.DONE,
+            TaskState.ADJUSTING_HEIGHT, TaskState.MANIPULATING,
+            TaskState.RETURNING_HOME, TaskState.DONE,
         )
 
     def test_robot_stays_upright_during_task(self, cfg):

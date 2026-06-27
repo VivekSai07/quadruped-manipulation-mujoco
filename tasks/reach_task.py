@@ -41,13 +41,13 @@ class ReachTask:
         # Track first success
         if self._success_time is None and self.coordinator.is_done:
             self._success_time = t
-            a = self.coordinator._cube_qpos_adr
+            a = self.coordinator.active_task._cube_qpos_adr
             cube_pos = self.data.qpos[a:a + 3].copy()
-            placed_ok = self.coordinator.placement_verified()
+            placed_ok = self.coordinator.active_task.is_success()
             print(f"\n  *** PICK-AND-PLACE SUCCESS at t={t:.2f}s ***")
             print(f"  EE position:    {self.coordinator.manip.ee_position()}")
             print(f"  Cube position:  {cube_pos}")
-            print(f"  Target plate:   {self.coordinator._target_pos}")
+            print(f"  Target plate:   {self.coordinator.active_task._target_pos}")
             print(f"  Placement OK:   {placed_ok}\n")
 
         # Periodic status

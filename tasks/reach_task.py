@@ -56,17 +56,32 @@ class ReachTask:
         self._status_interval = config.get("viewer", {}).get("status_interval", 0.5)
         self._last_status_t = -1.0
         self._success_time: float | None = None
+        self._success_at_manip_end: bool | None = None
 
     def step(self, dt: float) -> None:
         t = float(self.data.time)
+        was_manipulating = self.coordinator.state == TaskState.MANIPULATING
         self.coordinator.step(t, dt)
+
+        # Capture is_success() right as MANIPULATING hands off to
+        # RETURNING_HOME -- this is the only point guaranteed to reflect the
+        # task's actual outcome for EVERY Task type. PickAndPlaceTask/PushTask
+        # judge success by the manipulated object's resting position, which
+        # RETURNING_HOME's arm retreat doesn't disturb -- but ReachOnlyTask's
+        # success criterion is EE-distance-to-target, and RETURNING_HOME
+        # always moves the EE back to home immediately afterward, so reading
+        # is_success() later (e.g. at DONE) would read False on every single
+        # ReachOnlyTask run, success or not. Mirrors the same reasoning
+        # tests/test_task.py's TestReachOnlyTaskReachesDone already applies.
+        if was_manipulating and self.coordinator.state == TaskState.RETURNING_HOME:
+            self._success_at_manip_end = self.coordinator.active_task.is_success()
 
         # Track first success
         if self._success_time is None and self.coordinator.is_done:
             self._success_time = t
             active = self.coordinator.active_task
             task_name = type(active).__name__
-            placed_ok = active.is_success()
+            placed_ok = self._success_at_manip_end
             print(f"\n  *** {task_name} SUCCESS at t={t:.2f}s ***")
             print(f"  EE position:    {self.coordinator.manip.ee_position()}")
             # Task-specific position detail is only available on some task

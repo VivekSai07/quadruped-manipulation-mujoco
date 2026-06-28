@@ -1,0 +1,43 @@
+simulation:
+  timestep: 0.005
+  model_path: "models/combined.xml"
+  max_duration: 60.0
+
+go2:
+  kp_hip:   60.0
+  kp_thigh: 80.0
+  kp_knee:  100.0
+  kd:       4.0
+  gait_period:   0.6
+  swing_height:  0.05
+  stride_length: 0.10
+
+panda:
+  home_pose: [0.0, 0.0, 0.0, -1.5708, 0.0, 1.5708, -0.7853]
+  ik_iterations: 15
+  ik_step_size:  0.15
+  ik_damping:    0.01
+  ik_tolerance:  0.003
+
+task:
+  type: push                        # NEW: selects PushTask instead of pick_and_place
+  cube_pos:   [1.6, 0.0,  0.325]    # reused as object_pos -- the real, table-supported cube
+  target_pos: [1.63, 0.0, 0.325]    # short 3cm push -- contact-friction pushing is lossy over
+                                     # longer distances (see .superpowers/sdd/task-5-report.md)
+  stop_distance:     0.65
+  stable_duration:   2.0
+  stabilize_duration: 2.0
+  height_settle_time: 2.0
+  approach_threshold: 0.05
+  descend_threshold:  0.025
+  min_approach_time:  5.5
+  min_descend_time:   2.0
+  min_transport_time: 0.8
+
+panda_mass_scale: 0.35
+
+viewer:
+  camera_azimuth: -140.0
+  camera_elevation: -20.0
+  camera_distance: 3.5
+  status_interval: 0.5

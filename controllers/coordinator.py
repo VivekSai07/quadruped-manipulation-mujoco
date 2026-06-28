@@ -259,6 +259,13 @@ class TaskCoordinator:
                 if next_task is not None:
                     self._active_task = next_task
                     self._active_task.seed_approach(t)
+                    # Re-entering WALKING here skips STANDING, which is the
+                    # only other place gait mode is set to TROT -- without
+                    # this, the locomotion controller stays in whatever mode
+                    # WALKING last left it (STAND, set on arrival at the
+                    # previous task's stop point) and the robot never
+                    # actually walks toward the next task's target.
+                    self.loco.set_mode(GaitMode.TROT)
                     self._transition(TaskState.WALKING, t)
                 else:
                     self._transition(TaskState.DONE, t)

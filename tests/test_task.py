@@ -686,3 +686,117 @@ class TestPushTaskMovesObjectViaRealPhysics:
             "within the inline xy_err check -- _push_radius may be tighter "
             "than expected"
         )
+
+
+class TestNextTaskChainsTwoPickAndPlaceTasks:
+    """Task 6: next_task() sequencing. Two PickAndPlaceTasks chained via
+    `task_a.set_next_task(task_b)` must drive the coordinator through
+    WALKING twice (once per task) and reach DONE only after both have
+    completed, with the coordinator's active task swapping from task_a to
+    task_b in between -- exactly the RETURNING_HOME -> next_task() ->
+    WALKING-or-DONE seam Task 2 built into controllers/coordinator.py.
+
+    Geometry: the model has exactly one physical pushable/graspable object
+    (target_cube/cube_joint -- see models/combined.xml). Two chained
+    PickAndPlaceTasks necessarily operate on this same cube, relay-style:
+    task_a picks it up from the default cube spawn and places it at
+    target_pos_a; task_b is then constructed with cube_pos_b == target_pos_a
+    (a reasonable initial-guess seed -- PickAndPlaceTask.target_xy()'s live
+    physics refresh tracks the cube's real position during task_b's own
+    WALKING phase regardless) and a distinct target_pos_b.
+
+    Runtime: each full pick-and-place run is ~67s of simulated time
+    (pre-existing tracking-lag characteristic, see task-3-report.md /
+    task-5-report.md); two chained runs are expected to take roughly twice
+    that, ~130-140s. max_t=200.0 gives generous margin above that estimate.
+    This is the slowest test in the suite by design, not a defect.
+    """
+
+    def test_next_task_chains_two_pick_and_place_tasks(self, cfg):
+        m = mujoco.MjModel.from_xml_path(MODEL_PATH)
+        d = mujoco.MjData(m)
+        kid = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_KEY, "home")
+        mujoco.mj_resetDataKeyframe(m, d, kid)
+        mujoco.mj_forward(m, d)
+
+        coord = TaskCoordinator(m, d, cfg)
+        task_cfg = cfg["task"]
+
+        # Task A: default model cube spawn -> task_cfg's default target.
+        cube_pos_a   = task_cfg.get("cube_pos",   [1.6, 0.0,  0.325])
+        target_pos_a = task_cfg.get("target_pos", [1.6, 0.20, 0.331])
+        task_a = PickAndPlaceTask(
+            cube_pos_a, target_pos_a, m, d, coord.manip, coord._ftp, task_cfg,
+        )
+
+        # Task B: seed cube_pos_b with task A's placement point (where the
+        # cube will physically be once task A finishes); place it somewhere
+        # new and distinct from target_pos_a.
+        cube_pos_b   = target_pos_a
+        target_pos_b = [1.6, -0.20, 0.331]
+        task_b = PickAndPlaceTask(
+            cube_pos_b, target_pos_b, m, d, coord.manip, coord._ftp, task_cfg,
+        )
+
+        task_a.set_next_task(task_b)
+        coord._active_task = task_a
+
+        dt = m.opt.timestep
+        max_t = 200.0  # generous margin above the ~130-140s two-run estimate
+        n_steps = int(max_t / dt)
+
+        walking_entries = 0
+        was_walking = False
+        swapped_to_task_b = False
+        reached_done = False
+        # task_a.is_success() must be captured at the moment the swap to
+        # task_b happens, not at the end of the run -- both PickAndPlaceTasks
+        # share the same physical cube (relay-style), so by the time task_b
+        # finishes it has relocated the cube again, away from target_pos_a.
+        # Checking task_a.is_success() after that would read live physics
+        # that's no longer where task_a left it, even though task_a genuinely
+        # succeeded at the time (confirmed by the "lowering -> releasing"
+        # transition occurring before the swap).
+        task_a_success_at_swap = None
+
+        for _ in range(n_steps):
+            t = d.time
+            coord.step(t, dt)
+            coord.post_physics_step()
+            mujoco.mj_step(m, d)
+
+            is_walking = coord.state == TaskState.WALKING
+            if is_walking and not was_walking:
+                walking_entries += 1
+            was_walking = is_walking
+
+            if coord.active_task is task_b and not swapped_to_task_b:
+                swapped_to_task_b = True
+                task_a_success_at_swap = task_a.is_success()
+
+            if coord.is_done:
+                reached_done = True
+                break
+
+        assert reached_done, (
+            f"Coordinator did not reach DONE within {max_t:.1f}s "
+            f"(stuck in state={coord.state.value}, "
+            f"walking_entries={walking_entries})"
+        )
+        assert walking_entries == 2, (
+            f"Expected WALKING to be entered exactly twice (once per chained "
+            f"task), got {walking_entries}"
+        )
+        assert swapped_to_task_b, (
+            "Coordinator's active_task never swapped to task_b -- "
+            "next_task() chaining did not take effect"
+        )
+        assert coord.active_task is task_b, (
+            "Coordinator should still be on task_b when DONE is reached"
+        )
+        assert task_a_success_at_swap, (
+            "task_a's cube was not placed successfully (checked at the "
+            "moment of the swap to task_b, before task_b's own manipulation "
+            "could move the cube away from target_pos_a again)"
+        )
+        assert task_b.is_success(), "task_b's cube was not placed successfully"

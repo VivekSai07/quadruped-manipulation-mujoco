@@ -33,5 +33,13 @@ class Task(ABC):
 
     def next_task(self) -> Task | None:
         """Return the next Task to run after this one (for sequencing), or
-        None. Default: no sequencing."""
-        return None
+        None. Default: returns whatever was set via set_next_task(), or None
+        if never set."""
+        return getattr(self, "_next", None)
+
+    def set_next_task(self, task: Task) -> None:
+        """Attach a task to run after this one completes (RETURNING_HOME ->
+        WALKING toward the new task instead of DONE). Generic chaining
+        mechanism usable by any concrete Task subclass without each one
+        needing its own sequencing field or constructor param."""
+        self._next = task

@@ -675,3 +675,14 @@ class TestPushTaskMovesObjectViaRealPhysics:
             f"Object barely moved ({displacement:.3f}m) -- push may not have "
             "made real contact"
         )
+
+        # is_success() is the production API the plan asks for -- exercise
+        # it directly, not just the inline xy_err check above. PushTask's
+        # own _push_radius (0.05m) is looser than this test's stricter
+        # 0.025m inline check, so this should hold given the measured
+        # 0.0222m final error.
+        assert task.is_success(), (
+            "PushTask.is_success() returned False despite the object ending "
+            "within the inline xy_err check -- _push_radius may be tighter "
+            "than expected"
+        )

@@ -111,15 +111,18 @@ class PushTask(Task):
         self._object_qpos_adr = int(model.jnt_qposadr[object_jnt_id])
         self._object_body_id  = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "target_cube")
 
-        # Success tolerance. Baseline matches PickAndPlaceTask's
-        # _placement_radius (0.12m); pushing relies on real contact friction
-        # with no kinematic lock, so the plan's own "Open question" section
-        # pre-authorizes loosening this if testing shows the baseline too
-        # tight for contact-driven outcomes (overshoot/undershoot from
-        # friction and contact-solver noise). 0.12m held up fine in testing
-        # here, so it is kept as-is -- see task-5-report.md for the
-        # measured final displacement.
-        self._push_radius = 0.12
+        # Success tolerance. PickAndPlaceTask's _placement_radius (0.12m)
+        # was tried first as a baseline and rejected: it is wider than a
+        # typical push distance itself, so it would report success on a
+        # cube that never moved at all. Measured (reproducibly, see
+        # task-5-report.md): a 3cm push closes to within ~2.2cm of target;
+        # a 12cm push only closes to within ~11cm (most of the commanded
+        # sweep is lost to contact slip). 0.05m is tight enough to demand
+        # real movement for a modest push while still being achievable --
+        # it is NOT guaranteed to succeed for an arbitrary push distance,
+        # which matches the plan's own "Open question" acknowledgment that
+        # this may need a real tuning pass rather than a single fixed value.
+        self._push_radius = 0.05
 
         # Internal sub-state machine
         self._phase: PushTask.Phase = PushTask.Phase.APPROACHING

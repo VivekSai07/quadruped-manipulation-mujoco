@@ -2,7 +2,7 @@
 
 A MuJoCo simulation of a Unitree Go2 quadruped with a swappable robotic arm — Franka Panda or Kinova Gen3 — mounted on its back, performing a full autonomous pick-and-place task — no external SDKs, no ROS, pure Python.
 
-The robot walks to a table, lowers its stance to optimise arm workspace, reaches down to grasp a cube with the arm, transports it to a placement plate, and returns the arm to home. The complete task runs in ~67 seconds of simulated time.
+The robot walks to a table, lowers its stance to optimise arm workspace, reaches down to grasp a cube with the arm, transports it to a placement plate, and returns the arm to home. The complete task runs in ~34 seconds of simulated time.
 
 Both arms support the stock Franka two-finger gripper or a vendored Robotiq 2F-85 adaptive gripper (Kinova currently supports Robotiq only — see [Technical Details](#robot-model)).
 
@@ -108,7 +108,7 @@ python scripts/run_simulation.py --build-model
 python scripts/run_simulation.py --cube-pos 1.6 0.32 0.325 --no-viewer --record --video-path media/locomotion_turning_complete.mp4 --duration 45
 ```
 
-> Note: do not pass `--duration 30` when recording — the task takes ~67 s. Omit `--duration` to use the config default (150 s); the simulation stops automatically when `DONE` is reached.
+> Note: do not pass `--duration 30` when recording — the task takes ~34 s. Omit `--duration` to use the config default (150 s); the simulation stops automatically when `DONE` is reached.
 >
 > Note: `--record-width`/`--record-height` cannot exceed the model's offscreen framebuffer, set via `<visual><global offwidth="1280" offheight="720"/></visual>` in `scripts/build_model.py`. Requesting a larger resolution raises `ValueError: Image width ... > framebuffer width ...`. To record larger than 1280x720, bump `offwidth`/`offheight` in `build_model.py` and rebuild.
 >

@@ -243,7 +243,24 @@ class PickAndPlaceTask(Task):
         self._compute_waypoints()
 
     def target_xy(self) -> np.ndarray:
-        self._refresh_cube_pos()
+        # Only track the cube's live position before it's grasped (this is
+        # what lets WALKING steer toward wherever the cube actually is).
+        # Once _grasp_confirmed, the cube's "live" data.xpos IS the EE's own
+        # moving position (kinematically locked to it) -- refreshing
+        # _cube_pos from that and recomputing waypoints from it would corrupt
+        # _wp_lift (the LIFTING phase's ascent ceiling, cube_z + hover) into
+        # chasing the EE's own rising height every time something calls
+        # target_xy() (e.g. status_line(), called every step regardless of
+        # state). That created a runaway feedback loop -- the ceiling kept
+        # retreating upward exactly as fast as the arm climbed toward it --
+        # causing the arm to overshoot far above its intended hover height
+        # during LIFTING/TRANSPORTING before TRANSPORTING's fixed-target-
+        # based waypoint pulled it back down. The original, pre-refactor
+        # coordinator never had this bug because it only ever refreshed the
+        # cube position from its own WALKING branch, never from print/status
+        # code -- this mirrors that same invariant.
+        if not self._grasp_confirmed:
+            self._refresh_cube_pos()
         return self._cube_pos[:2]
 
     def _set_phase(self, new_phase: "PickAndPlaceTask.Phase", t: float) -> None:

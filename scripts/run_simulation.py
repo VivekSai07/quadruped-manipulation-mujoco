@@ -23,7 +23,7 @@ import re
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 # Force line-buffered stdout so output appears through conda run on Windows.
 if hasattr(sys.stdout, "reconfigure"):
@@ -38,10 +38,89 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from controllers.arms import ARMS, DEFAULT_ARM, get_arm_spec, validate_combo
 from controllers.end_effectors import DEFAULT_END_EFFECTOR, END_EFFECTORS, get_spec
+from tasks.base import Task
+from tasks.pick_and_place import PickAndPlaceTask
+from tasks.push import PushTask
+from tasks.reach_only import ReachOnlyTask
 from tasks.reach_task import ReachTask
+
+if TYPE_CHECKING:
+    from controllers.manipulation import ManipulationController
 
 _ARM_STAMP_RE = re.compile(r"ARM_STAMP:\s*(\S+)")
 _EE_STAMP_RE = re.compile(r"END_EFFECTOR_STAMP:\s*(\S+)")
+
+
+def _build_task(
+    task_item_cfg: dict[str, Any],
+    manip: "ManipulationController",
+    ftp_offset: float,
+    model: mujoco.MjModel,
+    data: mujoco.MjData,
+) -> Task:
+    """Construct a single Task from one task-config item (either the flat
+    cfg["task"] dict, or one entry of cfg["task"]["sequence"]), dispatching
+    on `type` (default "pick_and_place" -- today's only behavior).
+
+    Reuses existing config keys rather than inventing new ones:
+      - pick_and_place: cube_pos / target_pos (today's exact keys).
+      - reach_only: reuses cube_pos as the literal reach target (no separate
+        "target_point" key is introduced -- ReachOnlyTask just needs *some*
+        point, and cube_pos is already the point of interest in any task
+        config that didn't bother to add a push/pick-specific key).
+      - push: reuses cube_pos / target_pos as object_pos / target_pos,
+        mirroring PickAndPlaceTask's own convention.
+    """
+    task_type = task_item_cfg.get("type", "pick_and_place")
+    cube_pos = task_item_cfg.get("cube_pos", [1.6, 0.0, 0.325])
+    target_pos = task_item_cfg.get("target_pos", [1.6, 0.20, 0.331])
+
+    if task_type == "pick_and_place":
+        return PickAndPlaceTask(cube_pos, target_pos, model, data, manip, ftp_offset, task_item_cfg)
+    elif task_type == "reach_only":
+        return ReachOnlyTask(cube_pos, model, data, manip, task_item_cfg)
+    elif task_type == "push":
+        return PushTask(cube_pos, target_pos, model, data, manip, ftp_offset, task_item_cfg)
+    else:
+        raise ValueError(f"Unknown task.type: {task_type!r}")
+
+
+def _make_task_factory(model: mujoco.MjModel, data: mujoco.MjData, cfg: dict[str, Any]):
+    """Build the actual TaskFactory callable for ReachTask, given model/data
+    (available at call time in main()) and the full top-level config."""
+    task_cfg = cfg.get("task", {})
+    sequence = task_cfg.get("sequence")
+
+    def factory(manip: "ManipulationController", ftp_offset: float, _task_cfg: dict[str, Any]) -> Task:
+        if sequence:
+            items = [_build_task(item, manip, ftp_offset, model, data) for item in sequence]
+            for a, b in zip(items, items[1:]):
+                a.set_next_task(b)
+            return items[0]
+        return _build_task(task_cfg, manip, ftp_offset, model, data)
+
+    return factory
+
+
+def _describe_task(cfg: dict[str, Any]) -> str:
+    """Human-readable one-line description of the active task(s) for the
+    startup banner, replacing the old pick-and-place-only hardcoded line."""
+    task_cfg = cfg.get("task", {})
+    sequence = task_cfg.get("sequence")
+    if sequence:
+        kinds = ", ".join(item.get("type", "pick_and_place") for item in sequence)
+        return f"Sequence of {len(sequence)} task(s): {kinds}"
+
+    task_type = task_cfg.get("type", "pick_and_place")
+    cube_pos = task_cfg.get("cube_pos", [1.6, 0.0, 0.325])
+    target_pos = task_cfg.get("target_pos", [1.6, 0.20, 0.331])
+    if task_type == "pick_and_place":
+        return f"Walk to cube at {cube_pos}, grasp, transport to {target_pos}"
+    elif task_type == "reach_only":
+        return f"Walk to point {cube_pos}, reach with arm (no grasp)"
+    elif task_type == "push":
+        return f"Walk to object at {cube_pos}, push toward {target_pos}"
+    return f"Unknown task type {task_type!r}"
 
 
 def _model_stamps(model_path: str) -> tuple[str | None, str | None]:
@@ -295,7 +374,19 @@ def main() -> int:
         cfg["task"]["cube_pos"] = list(args.cube_pos)
         print(f"Relocated cube to {args.cube_pos}")
 
-    task = ReachTask(model, data, cfg, arm=args.arm, end_effector=effective_ee)
+    # Only pass a task_factory when the config actually opts into
+    # task-type selection or sequencing -- when task.type/task.sequence are
+    # both absent (today's default.yaml), task_factory stays None and
+    # ReachTask/TaskCoordinator take their original, unmodified default-
+    # construction path (a hardcoded PickAndPlaceTask), guaranteeing
+    # byte-for-byte identical behavior to before this change.
+    task_item_cfg = cfg.get("task", {})
+    if "type" in task_item_cfg or "sequence" in task_item_cfg:
+        task_factory = _make_task_factory(model, data, cfg)
+    else:
+        task_factory = None
+
+    task = ReachTask(model, data, cfg, arm=args.arm, end_effector=effective_ee, task_factory=task_factory)
 
     print(f"\n{'='*60}")
     print("Go2 Loco-Manipulation Demo")
@@ -303,9 +394,9 @@ def main() -> int:
     print(f"  End-effector: {get_spec(effective_ee).display_name}")
     print(f"  Model: nq={model.nq}, nu={model.nu}, nbody={model.nbody}")
     print(f"  Total mass: {sum(model.body_mass):.2f} kg")
-    print(f"  Task: Walk to cube at {cfg['task']['cube_pos']}, reach with arm")
+    print(f"  Task: {_describe_task(cfg)}")
     print(f"  Max duration: {max_duration:.1f}s")
-    print("  States: INIT->STANDING->WALKING->STOPPING->STABILIZING->ADJUSTING_HEIGHT->APPROACHING->DESCENDING->GRASPING->LIFTING->TRANSPORTING->LOWERING->RELEASING->RETURNING_HOME->DONE")
+    print("  States: INIT->STANDING->WALKING->STOPPING->STABILIZING->ADJUSTING_HEIGHT->MANIPULATING->RETURNING_HOME->DONE")
     print(f"{'='*60}\n")
 
     if args.record:

@@ -2,7 +2,7 @@
 
 A MuJoCo simulation of a Unitree Go2 quadruped with a swappable robotic arm — Franka Panda or Kinova Gen3 — mounted on its back, performing a full autonomous pick-and-place task — no external SDKs, no ROS, pure Python.
 
-The robot walks to a table, lowers its stance to optimise arm workspace, reaches down to grasp a cube with the arm, transports it to a placement plate, and returns the arm to home. The complete task runs in ~34 seconds of simulated time.
+The robot walks to a table, lowers its stance to optimise arm workspace, reaches down to grasp a cube with the arm, transports it to a placement plate, and returns the arm to home. The complete task runs in ~67 seconds of simulated time.
 
 Both arms support the stock Franka two-finger gripper or a vendored Robotiq 2F-85 adaptive gripper (Kinova currently supports Robotiq only — see [Technical Details](#robot-model)).
 
@@ -21,24 +21,34 @@ Both arms support the stock Franka two-finger gripper or a vendored Robotiq 2F-8
 ```
 scripts/run_simulation.py   ← entry point (viewer / headless / record)
 scripts/build_model.py      ← generates models/combined.xml from scratch
-tasks/reach_task.py         ← logging wrapper around the coordinator
+tasks/
+  base.py                   ← Task ABC: the pluggable-task strategy interface
+  reach_task.py             ← logging wrapper around the coordinator
+  pick_and_place.py         ← PickAndPlaceTask: walk-grasp-transport-place
+  reach_only.py             ← ReachOnlyTask: walk-and-reach, no grasp
+  push.py                   ← PushTask: walk-and-push via real contact physics
 controllers/
   arms.py                   ← arm registry (Franka Panda, Kinova Gen3) + combo validation
   end_effectors.py          ← end-effector registry (Franka hand, Robotiq 2F-85) + mount overrides
-  coordinator.py            ← 15-state task state machine
+  coordinator.py            ← generic outer task state machine
   locomotion.py             ← Go2 PD stand + sinusoidal trot gait
   manipulation.py           ← arm velocity-IK + gripper control (arm-agnostic)
 configs/default.yaml        ← all tunable parameters
 models/combined.xml         ← built MJCF (auto-generated, not hand-edited)
 ```
 
+### Task Strategy Abstraction
+
+`tasks/base.py` defines `Task`, an ABC that owns everything from "the robot has arrived" to "this object is done," while `TaskCoordinator` (`controllers/coordinator.py`) owns the generic parts -- locomotion, stabilization, adaptive height, and returning home -- independent of what manipulation behavior is running. Four concrete strategies exist today: `PickAndPlaceTask` (`tasks/pick_and_place.py`, the original grasp/transport/place behavior), `ReachOnlyTask` (`tasks/reach_only.py`, walk-and-reach with no grasp), and `PushTask` (`tasks/push.py`, walk-and-push via real contact friction instead of kinematic attachment). Tasks can be chained for multi-object sequencing via `task.set_next_task(next_task)` / `task.next_task()`: once a task finishes, `TaskCoordinator` automatically swaps to its chained successor and walks toward the next target instead of going `DONE`.
+
 ### State Machine
 
 ```
 INIT → STANDING → WALKING → STOPPING → STABILIZING
-     → ADJUSTING_HEIGHT → APPROACHING → DESCENDING → GRASPING
-     → LIFTING → TRANSPORTING → LOWERING → RELEASING → RETURNING_HOME → DONE
+     → ADJUSTING_HEIGHT → MANIPULATING → RETURNING_HOME → DONE
 ```
+
+This outer machine is generic across all `Task` types -- `MANIPULATING` simply delegates to the active `Task`'s own `manip_step()` every physics step, and the task's internal sub-phases are invisible to the coordinator. `PickAndPlaceTask`'s 7 sub-phases (`APPROACHING → DESCENDING → GRASPING → LIFTING → TRANSPORTING → LOWERING → RELEASING`, with a `REGRASP` retry branch) are just one example: `ReachOnlyTask` has no sub-phases at all (a single reach, nothing to delegate to), and `PushTask` has 3 (`APPROACHING → DESCENDING → PUSHING`).
 
 Key engineering decisions:
 
@@ -98,7 +108,7 @@ python scripts/run_simulation.py --build-model
 python scripts/run_simulation.py --cube-pos 1.6 0.32 0.325 --no-viewer --record --video-path media/locomotion_turning_complete.mp4 --duration 45
 ```
 
-> Note: do not pass `--duration 30` when recording — the task takes ~34 s. Omit `--duration` to use the config default (150 s); the simulation stops automatically when `DONE` is reached.
+> Note: do not pass `--duration 30` when recording — the task takes ~67 s. Omit `--duration` to use the config default (150 s); the simulation stops automatically when `DONE` is reached.
 >
 > Note: `--record-width`/`--record-height` cannot exceed the model's offscreen framebuffer, set via `<visual><global offwidth="1280" offheight="720"/></visual>` in `scripts/build_model.py`. Requesting a larger resolution raises `ValueError: Image width ... > framebuffer width ...`. To record larger than 1280x720, bump `offwidth`/`offheight` in `build_model.py` and rebuild.
 >
@@ -113,7 +123,7 @@ python scripts/run_simulation.py --cube-pos 1.6 0.32 0.325 --no-viewer --record 
 pytest tests/ -v
 ```
 
-86 tests covering model integrity, controller math, stability, full task integration, arm/end-effector variant combinations, CLI helpers, and locomotion turning/speed control.
+105 tests covering model integrity, controller math, stability, full task integration, arm/end-effector variant combinations, CLI helpers, locomotion turning/speed control, REGRASP fault recovery, the `ReachOnlyTask`/`PushTask` task types, multi-object sequencing via `next_task()`, and config-driven task-type/sequence selection.
 
 ---
 
@@ -132,6 +142,47 @@ task:
   grasp_hold_duration: 3.0          # seconds gripper holds closed before lift
   height_settle_time: 2.0           # seconds for Go2 to settle at new crouch
 ```
+
+### Task type selection (`task.type` / `task.sequence`)
+
+`scripts/run_simulation.py` reads an optional `task.type` key (default `pick_and_place`, so today's default config is unaffected) to choose which `Task` strategy to run, reusing the existing `cube_pos`/`target_pos` keys rather than introducing new ones per type:
+
+```yaml
+# Pick-and-place (default -- identical to omitting task.type entirely)
+task:
+  type: pick_and_place
+  cube_pos:   [1.6, 0.0,  0.325]
+  target_pos: [1.6, 0.20, 0.331]
+
+# Reach-only: walk to a point and reach, no grasp. cube_pos is reused as
+# the literal reach target -- no separate "target_point" key is introduced.
+task:
+  type: reach_only
+  cube_pos: [1.6, 0.0, 0.45]
+
+# Push: walk to an object and push it via real contact physics (no grasp,
+# no kinematic attachment). cube_pos/target_pos are reused as object_pos/
+# target_pos, mirroring pick_and_place's own convention.
+task:
+  type: push
+  cube_pos:   [1.6, 0.20, 0.325]
+  target_pos: [1.6, -0.20, 0.325]
+```
+
+For multi-object runs, `task.sequence` chains a list of per-item dicts (each with its own `type` plus that type's own fields) via `Task.set_next_task()` -- the coordinator automatically walks toward and runs each task in turn instead of going `DONE` after the first:
+
+```yaml
+task:
+  sequence:
+    - type: pick_and_place
+      cube_pos:   [1.6, 0.0,  0.325]
+      target_pos: [1.6, 0.20, 0.331]
+    - type: push
+      cube_pos:   [1.6, 0.20, 0.325]
+      target_pos: [1.6, -0.20, 0.325]
+```
+
+`task.sequence` is opt-in only (absent from `configs/default.yaml`'s shipped defaults) -- add it to your own config dict or YAML file when you want it.
 
 ---
 
@@ -152,15 +203,19 @@ Go2+FR/
 │   ├── end_effectors.py  End-effector registry (EndEffectorSpec, MountOverride) for Franka hand / Robotiq 2F-85
 │   ├── locomotion.py    Go2 PD + trot gait + crouch blend
 │   ├── manipulation.py  Arm-agnostic velocity-IK, batch IK, gripper control
-│   └── coordinator.py   Task state machine (15 states)
+│   └── coordinator.py   Generic outer task state machine
 ├── models/
 │   └── combined.xml     Auto-generated MJCF (git-ignored if large)
 ├── scripts/
 │   ├── build_model.py     MJCF generator
-│   ├── run_simulation.py  Main entry point
+│   ├── run_simulation.py  Main entry point + task.type/task.sequence factory
 │   └── smoke_test*.py     Quick sanity scripts
 ├── tasks/
-│   └── reach_task.py    Task wrapper with logging
+│   ├── base.py           Task ABC: pluggable-task strategy interface
+│   ├── reach_task.py     Task wrapper with logging
+│   ├── pick_and_place.py PickAndPlaceTask: walk-grasp-transport-place
+│   ├── reach_only.py     ReachOnlyTask: walk-and-reach, no grasp
+│   └── push.py           PushTask: walk-and-push via real contact physics
 ├── tests/
 │   ├── test_model.py
 │   ├── test_controllers.py

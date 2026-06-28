@@ -37,9 +37,9 @@ for i in range(n_steps):
 
 print()
 coord = task.coordinator
-a = coord._cube_qpos_adr
+a = coord.active_task._cube_qpos_adr
 cube_pos = d.qpos[a:a + 3].copy()
-target = coord._target_pos
+target = coord.active_task._target_pos
 xy_err = float(np.linalg.norm(cube_pos[:2] - target[:2]))
 z_err = float(abs(cube_pos[2] - target[2]))
 
@@ -48,7 +48,7 @@ print(f"Cube pos:       [{cube_pos[0]:.4f}, {cube_pos[1]:.4f}, {cube_pos[2]:.4f}
 print(f"Target pos:     [{target[0]:.4f}, {target[1]:.4f}, {target[2]:.4f}]")
 print(f"XY error:       {xy_err:.3f} m")
 print(f"Z  error:       {z_err:.3f} m")
-print(f"Placement OK:   {coord.placement_verified()}")
+print(f"Placement OK:   {coord.active_task.is_success()}")
 print(f"Sim time:       {float(d.time):.2f} s")
 print()
 if coord.state.value == "done":

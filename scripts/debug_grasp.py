@@ -12,6 +12,7 @@ ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
 
 from controllers.coordinator import TaskCoordinator, TaskState
+from tasks.pick_and_place import PickAndPlaceTask
 from tasks.reach_task import ReachTask
 
 cfg = yaml.safe_load((ROOT / "configs" / "default.yaml").read_text(encoding="utf-8"))
@@ -43,9 +44,10 @@ for i in range(int(50.0 / dt)):
     t = float(d.time)
 
     state = coord.state
+    phase = coord.active_task.phase
 
     # Print geometry snapshot when we enter GRASPING
-    if state == TaskState.GRASPING and not grasping_printed:
+    if phase == PickAndPlaceTask.Phase.GRASPING and not grasping_printed:
         grasping_printed = True
         mujoco.mj_fwdPosition(m, d)
         ee_pos   = d.site_xpos[ee_sid].copy()
@@ -82,7 +84,7 @@ for i in range(int(50.0 / dt)):
             print(f"  contact {ci}: [{b1n}:{g1n}] vs [{b2n}:{g2n}]")
 
     # Print once per second during grasping
-    if state == TaskState.GRASPING and i % 200 == 0:
+    if phase == PickAndPlaceTask.Phase.GRASPING and i % 200 == 0:
         mujoco.mj_fwdPosition(m, d)
         ee_pos = d.site_xpos[ee_sid].copy()
         cube_pos = d.xpos[cube_bid].copy()
@@ -91,7 +93,7 @@ for i in range(int(50.0 / dt)):
         grasped = coord.manip.is_grasped()
         print(f"  t={t:.2f}s GRASPING: ee={ee_pos.round(3)} cube={cube_pos.round(3)} fj={q_fj1:.4f} grasped={grasped} ncon={d.ncon}")
 
-    if state == TaskState.LIFTING and i % 200 == 0:
+    if phase == PickAndPlaceTask.Phase.LIFTING and i % 200 == 0:
         mujoco.mj_fwdPosition(m, d)
         cube_pos = d.xpos[cube_bid].copy()
         ee_pos = d.site_xpos[ee_sid].copy()
@@ -100,10 +102,11 @@ for i in range(int(50.0 / dt)):
         grasped = coord.manip.is_grasped()
         print(f"  t={t:.2f}s LIFTING: cube_z={cube_pos[2]:.4f} ee_z={ee_pos[2]:.4f} fj={q_fj1:.4f} grasped={grasped} ncon={d.ncon}")
 
-    if state == TaskState.TRANSPORTING or coord.is_done:
+    if phase == PickAndPlaceTask.Phase.TRANSPORTING or coord.is_done:
         mujoco.mj_fwdPosition(m, d)
         cube_pos = d.xpos[cube_bid].copy()
-        print(f"\n  Reached {state.value} at t={t:.2f}s, cube_z={cube_pos[2]:.4f}m")
+        label = state.value if coord.is_done else phase.value
+        print(f"\n  Reached {label} at t={t:.2f}s, cube_z={cube_pos[2]:.4f}m")
         break
 
 print("\nDone.")

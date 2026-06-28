@@ -22,6 +22,19 @@ panda:
   ik_tolerance:  0.003
 
 task:
+  type: pick_and_place              # pick_and_place | reach_only | push (default: pick_and_place)
+  # Optional multi-object sequencing: a list of per-item dicts, each with its
+  # own `type` plus that type's own fields (same keys as the flat task: block
+  # above, scoped per item). Absent by default -- a populated default
+  # sequence would change today's demo behavior, so this is opt-in only,
+  # added to a caller's own config dict, not shipped live here. Example:
+  #   sequence:
+  #     - type: pick_and_place
+  #       cube_pos:   [1.6, 0.0,  0.325]
+  #       target_pos: [1.6, 0.20, 0.331]
+  #     - type: push
+  #       cube_pos:   [1.6, 0.20, 0.325]
+  #       target_pos: [1.6, -0.20, 0.325]
   cube_pos:   [1.6, 0.0,  0.325]   # pickup cube center on worktable
   target_pos: [1.6, 0.20, 0.331]   # cube center when resting on placement plate
   stop_distance:     0.65           # meters XY to stop walking (clear of table legs)

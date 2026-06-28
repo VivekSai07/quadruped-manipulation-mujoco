@@ -800,3 +800,120 @@ class TestNextTaskChainsTwoPickAndPlaceTasks:
             "could move the cube away from target_pos_a again)"
         )
         assert task_b.is_success(), "task_b's cube was not placed successfully"
+
+
+class TestRunSimulationTaskFactory:
+    """Light, fast tests for scripts/run_simulation.py's config-driven task
+    factory (Task 7) -- construction/type checks only, no full simulation
+    runs. The underlying behavior of each Task type and of sequencing was
+    already verified end-to-end by Tasks 4/5/6's tests above; this class
+    only proves the factory wiring dispatches to the right type and reuses
+    the right config keys, and that task.type absent/"pick_and_place"
+    reproduces today's default construction unchanged."""
+
+    def test_default_type_builds_pick_and_place_task(self, cfg):
+        from scripts.run_simulation import _build_task
+
+        m = mujoco.MjModel.from_xml_path(MODEL_PATH)
+        d = mujoco.MjData(m)
+        kid = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_KEY, "home")
+        mujoco.mj_resetDataKeyframe(m, d, kid)
+        mujoco.mj_forward(m, d)
+
+        coord = TaskCoordinator(m, d, cfg)
+        task_cfg = cfg["task"]  # task.type absent in default.yaml
+
+        task = _build_task(task_cfg, coord.manip, coord._ftp, m, d)
+
+        assert isinstance(task, PickAndPlaceTask)
+        np.testing.assert_array_equal(task._cube_pos, np.array(task_cfg["cube_pos"], dtype=np.float64))
+        np.testing.assert_array_equal(task._target_pos, np.array(task_cfg["target_pos"], dtype=np.float64))
+
+    def test_explicit_pick_and_place_type_matches_default(self, cfg):
+        from scripts.run_simulation import _build_task
+
+        m = mujoco.MjModel.from_xml_path(MODEL_PATH)
+        d = mujoco.MjData(m)
+        coord = TaskCoordinator(m, d, cfg)
+        task_cfg = dict(cfg["task"], type="pick_and_place")
+
+        task = _build_task(task_cfg, coord.manip, coord._ftp, m, d)
+        assert isinstance(task, PickAndPlaceTask)
+
+    def test_reach_only_type_builds_reach_only_task(self, cfg):
+        from scripts.run_simulation import _build_task
+
+        m = mujoco.MjModel.from_xml_path(MODEL_PATH)
+        d = mujoco.MjData(m)
+        coord = TaskCoordinator(m, d, cfg)
+        task_cfg = dict(cfg["task"], type="reach_only")
+
+        task = _build_task(task_cfg, coord.manip, coord._ftp, m, d)
+        assert isinstance(task, ReachOnlyTask)
+
+    def test_push_type_builds_push_task(self, cfg):
+        from scripts.run_simulation import _build_task
+
+        m = mujoco.MjModel.from_xml_path(MODEL_PATH)
+        d = mujoco.MjData(m)
+        coord = TaskCoordinator(m, d, cfg)
+        task_cfg = dict(cfg["task"], type="push")
+
+        task = _build_task(task_cfg, coord.manip, coord._ftp, m, d)
+        assert isinstance(task, PushTask)
+
+    def test_unknown_type_raises(self, cfg):
+        from scripts.run_simulation import _build_task
+
+        m = mujoco.MjModel.from_xml_path(MODEL_PATH)
+        d = mujoco.MjData(m)
+        coord = TaskCoordinator(m, d, cfg)
+        task_cfg = dict(cfg["task"], type="not_a_real_task_type")
+
+        with pytest.raises(ValueError):
+            _build_task(task_cfg, coord.manip, coord._ftp, m, d)
+
+    def test_sequence_chains_tasks_via_factory(self, cfg):
+        """A task.sequence of 2+ items, run through _make_task_factory's
+        chaining logic, produces task_a.next_task() is task_b -- a
+        structural check only (Task 6 already proved the coordinator-side
+        mechanics work end-to-end in TestNextTaskChainsTwoPickAndPlaceTasks
+        above)."""
+        from scripts.run_simulation import _make_task_factory
+
+        m = mujoco.MjModel.from_xml_path(MODEL_PATH)
+        d = mujoco.MjData(m)
+        kid = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_KEY, "home")
+        mujoco.mj_resetDataKeyframe(m, d, kid)
+        mujoco.mj_forward(m, d)
+
+        full_cfg = copy.deepcopy(cfg)
+        full_cfg["task"]["sequence"] = [
+            {"type": "pick_and_place", "cube_pos": [1.6, 0.0, 0.325], "target_pos": [1.6, 0.20, 0.331]},
+            {"type": "push", "cube_pos": [1.6, 0.20, 0.325], "target_pos": [1.6, -0.20, 0.325]},
+        ]
+
+        coord = TaskCoordinator(m, d, full_cfg)
+        factory = _make_task_factory(m, d, full_cfg)
+        task_a = factory(coord.manip, coord._ftp, full_cfg["task"])
+
+        assert isinstance(task_a, PickAndPlaceTask)
+        task_b = task_a.next_task()
+        assert task_b is not None
+        assert isinstance(task_b, PushTask)
+        assert task_a.next_task() is task_b
+
+    def test_nine_existing_call_sites_construct_without_task_factory(self, cfg):
+        """Smoke check: ReachTask's new task_factory param is optional and
+        defaults to None, so every pre-existing call site (scripts/
+        run_simulation.py, scripts/smoke_test*.py, scripts/debug_grasp.py,
+        and the TaskCoordinator/ReachTask constructions throughout this
+        file) keeps working unmodified -- covered structurally here and by
+        the full suite staying green."""
+        m = mujoco.MjModel.from_xml_path(MODEL_PATH)
+        d = mujoco.MjData(m)
+        kid = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_KEY, "home")
+        mujoco.mj_resetDataKeyframe(m, d, kid)
+
+        task = ReachTask(m, d, cfg)  # no task_factory passed
+        assert isinstance(task.coordinator.active_task, PickAndPlaceTask)

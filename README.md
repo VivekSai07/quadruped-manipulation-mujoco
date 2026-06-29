@@ -186,6 +186,36 @@ task:
 
 ---
 
+## Vision-Guided Picking
+
+A fixed, world-mounted MuJoCo camera (`workspace_cam`) plus a classical-CV pipeline (HSV color threshold + real depth-buffer backprojection, no ML/no new dependencies) can perceive the cube's position instead of reading it from config or ground truth. Opt-in via `perception.enabled` (absent/false by default, so `configs/default.yaml`'s behavior is unaffected):
+
+```yaml
+perception:
+  enabled: true
+  camera_name: workspace_cam
+  width: 640
+  height: 480
+  hue_center_deg: 2.31
+  hue_tolerance_deg: 18.0
+  min_saturation: 0.5
+  min_value: 0.5
+  min_pixel_count: 25
+  depth_cluster_tolerance: 0.050
+```
+
+Try it with the provided demo config, relocating the cube away from the config's seeded position to prove the robot follows what the camera actually sees, not a stale value:
+
+```bash
+python scripts/run_simulation.py --config configs/vision_demo.yaml --cube-pos 1.4 -0.28 0.325 --no-viewer
+```
+
+**What's proven and solid**: with perception enabled, the pre-grasp WALKING/APPROACHING heading genuinely converges to the camera-perceived cube position (`CubeDetector` accuracy: ~17-19mm) -- not a stale config seed. This is real, tested, load-bearing perception, not decorative wiring.
+
+**Known limitation**: the full grasp-to-place cycle is not yet reliable under live perception. The cube's position is re-derived from a fresh camera reading every physics step throughout APPROACHING/DESCENDING, so frame-to-frame rendering noise can make the end-effector chase a continuously-jittering target and never settle close enough to grasp -- if you run the demo and the robot stalls before closing the gripper, that's this known, documented behavior, not a bug in your setup. The recommended fix (freeze the perceived cube position once the robot enters its manipulation phase, mirroring the existing post-grasp position freeze already in `tasks/pick_and_place.py`) is tracked as follow-up work, not yet implemented. See `.superpowers/sdd/vision-task-3-report.md` and `.superpowers/sdd/vision-task-6-report.md` for the full investigation.
+
+---
+
 ## Project Structure
 
 ```

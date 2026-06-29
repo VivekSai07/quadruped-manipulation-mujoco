@@ -5,6 +5,22 @@
 #
 # Otherwise identical to configs/default.yaml, with one live change:
 # perception.enabled: true.
+#
+# KNOWN LIMITATION (see .superpowers/sdd/vision-task-6-report.md for full
+# detail): live perception reliably drives the pre-grasp WALKING/
+# APPROACHING heading toward the camera-perceived cube position instead of
+# a stale config value -- that claim is proven and solid. The FULL
+# grasp-to-place cycle is NOT yet reliable under live perception: the
+# cube's position is re-derived from a fresh camera reading every physics
+# step throughout APPROACHING/DESCENDING, so frame-to-frame rendering
+# noise can make the end-effector chase a continuously-jittering target
+# and never settle close enough to grasp. If you run this config and the
+# robot stalls before ever closing the gripper, that is this known,
+# documented behavior -- not a regression in your setup. The recommended
+# fix (freeze the perceived cube position once MANIPULATING begins,
+# mirroring the existing post-grasp freeze in
+# tasks/pick_and_place.py's target_xy()) is tracked as follow-up work, not
+# yet implemented.
 
 simulation:
   timestep: 0.005

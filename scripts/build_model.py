@@ -831,6 +831,19 @@ def _arm_contact_exclude_xml(arm_spec: ArmSpec) -> str:
     )
 
 
+def _workspace_camera_xml() -> str:
+    """Fixed, world-mounted camera framing the cube's full reachable region
+    (x in [1.36, 1.84], y in [-0.33, 0.33] -- see README's --cube-pos note)
+    throughout WALKING and APPROACHING. Placed beyond the table's far edge,
+    elevated, angled back across the table so the approaching Go2 body never
+    occludes the cube. Not arm-mounted -- see perception/ package (added in
+    a later phase of this feature)."""
+    return (
+        '    <camera name="workspace_cam" pos="2.35 0 0.95" '
+        'xyaxes="0 1 0 -0.55 0 0.83"/>'
+    )
+
+
 def build_combined_xml(arm: str = DEFAULT_ARM, end_effector: str | None = None) -> str:
     """Return the complete combined MJCF XML as a string."""
     arm_spec = get_arm_spec(arm)
@@ -1180,6 +1193,8 @@ def build_combined_xml(arm: str = DEFAULT_ARM, end_effector: str | None = None) 
       <geom name="tleg_rr" type="cylinder" size="0.018 0.1425" pos="-0.22 -0.30 0.1425" material="table_leg_mat"/>
       <site name="table_center" pos="0 0 0.30" size="0.01"/>
     </body>
+
+{_workspace_camera_xml()}
 
     <!-- Placement plate (bright green target zone on table surface) -->
     <!-- Plate top at z = 0.30 + 0.006 = 0.306 m                    -->

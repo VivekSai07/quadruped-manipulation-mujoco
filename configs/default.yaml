@@ -53,6 +53,23 @@ task:
 
 panda_mass_scale: 0.35      # Panda inertias scaled at model-build time
 
+# Optional vision-guided picking. Absent by default -- a populated block
+# here would change today's demo behavior (PickAndPlaceTask would start
+# consulting perception instead of ground truth for its pre-grasp
+# position), so this stays opt-in only, added to a caller's own config
+# (e.g. configs/vision_demo.yaml), not shipped live here. Example:
+# perception:
+#   enabled: true
+#   camera_name: workspace_cam
+#   width: 640
+#   height: 480
+#   hue_center_deg: 2.31
+#   hue_tolerance_deg: 18.0
+#   min_saturation: 0.5
+#   min_value: 0.5
+#   min_pixel_count: 25
+#   depth_cluster_tolerance: 0.050
+
 # Visualization
 viewer:
   camera_azimuth: -140.0

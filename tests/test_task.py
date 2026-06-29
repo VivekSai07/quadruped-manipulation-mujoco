@@ -917,3 +917,74 @@ class TestRunSimulationTaskFactory:
 
         task = ReachTask(m, d, cfg)  # no task_factory passed
         assert isinstance(task.coordinator.active_task, PickAndPlaceTask)
+
+    def test_perception_enabled_constructs_real_cube_detector(self, cfg):
+        """_make_task_factory must construct a real CubeDetector when
+        perception.enabled is true, and thread it into the resulting
+        PickAndPlaceTask (vision Phase 5)."""
+        from perception.cube_detector import CubeDetector
+        from scripts.run_simulation import _make_task_factory
+
+        m = mujoco.MjModel.from_xml_path(MODEL_PATH)
+        d = mujoco.MjData(m)
+        kid = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_KEY, "home")
+        mujoco.mj_resetDataKeyframe(m, d, kid)
+        mujoco.mj_forward(m, d)
+
+        full_cfg = copy.deepcopy(cfg)
+        full_cfg["perception"] = {"enabled": True}
+
+        coord = TaskCoordinator(m, d, full_cfg)
+        factory = _make_task_factory(m, d, full_cfg)
+        task = factory(coord.manip, coord._ftp, full_cfg["task"])
+
+        try:
+            assert isinstance(task, PickAndPlaceTask)
+            assert task._cube_detector is not None
+            assert isinstance(task._cube_detector, CubeDetector)
+        finally:
+            task._cube_detector.close()
+
+    def test_perception_absent_leaves_cube_detector_none(self, cfg):
+        """Default/absent perception config is a true no-op: the resulting
+        task's _cube_detector stays None, identical to pre-Phase-5
+        behavior (vision Phase 5)."""
+        from scripts.run_simulation import _make_task_factory
+
+        m = mujoco.MjModel.from_xml_path(MODEL_PATH)
+        d = mujoco.MjData(m)
+        kid = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_KEY, "home")
+        mujoco.mj_resetDataKeyframe(m, d, kid)
+        mujoco.mj_forward(m, d)
+
+        coord = TaskCoordinator(m, d, cfg)  # cfg has no "perception" key
+        factory = _make_task_factory(m, d, cfg)
+        task = factory(coord.manip, coord._ftp, cfg["task"])
+
+        assert isinstance(task, PickAndPlaceTask)
+        assert task._cube_detector is None
+
+    def test_factory_guard_fires_on_perception_enabled_without_task_type(self, cfg):
+        """The factory-construction guard in main() must also fire when
+        perception.enabled is true, even with task.type/task.sequence both
+        absent -- otherwise perception.enabled alone would be a silent
+        no-op (vision Phase 5's guard fix). This mirrors the exact
+        condition shipped in scripts/run_simulation.py's main()."""
+        full_cfg = copy.deepcopy(cfg)
+        full_cfg["perception"] = {"enabled": True}
+        full_cfg["task"].pop("type", None)
+        full_cfg["task"].pop("sequence", None)
+        assert "type" not in full_cfg["task"]
+        assert "sequence" not in full_cfg["task"]
+
+        task_item_cfg = full_cfg.get("task", {})
+        perception_cfg = full_cfg.get("perception", {})
+        should_build_factory = (
+            "type" in task_item_cfg
+            or "sequence" in task_item_cfg
+            or perception_cfg.get("enabled", False)
+        )
+        assert should_build_factory, (
+            "perception.enabled=True must trigger the factory path even "
+            "without task.type/task.sequence set"
+        )

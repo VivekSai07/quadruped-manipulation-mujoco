@@ -32,6 +32,7 @@ from .base import Task
 if TYPE_CHECKING:
     from controllers.coordinator import TaskCoordinator
     from controllers.manipulation import ManipulationController
+    from perception.cube_detector import CubeDetector
 
 # Cartesian target move rate for APPROACHING / TRANSPORTING (m/s).
 # The interp target steps at this rate; velocity IK tracks it each timestep.
@@ -66,11 +67,13 @@ class PickAndPlaceTask(Task):
         manip: "ManipulationController",
         ftp_offset: float,
         task_cfg: dict[str, Any],
+        cube_detector: "CubeDetector | None" = None,
     ) -> None:
         self.model = model
         self.data  = data
         self.manip = manip
         self._ftp  = ftp_offset
+        self._cube_detector = cube_detector
 
         # Pickup and placement positions (world frame)
         self._cube_pos   = np.array(cube_pos,   dtype=np.float64)
@@ -238,7 +241,11 @@ class PickAndPlaceTask(Task):
     # ── Task ABC interface ───────────────────────────────────────────────
 
     def _refresh_cube_pos(self) -> None:
-        pos = self.data.xpos[self._cube_body_id].copy()
+        pos = None
+        if self._cube_detector is not None:
+            pos = self._cube_detector.detect(self.data)   # None on a detection miss
+        if pos is None:
+            pos = self.data.xpos[self._cube_body_id].copy()   # ground-truth fallback (today's exact behavior)
         self._cube_pos[:] = pos
         self._compute_waypoints()
 

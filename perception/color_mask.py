@@ -22,6 +22,20 @@ def rgb_to_hsv(rgb: np.ndarray) -> np.ndarray:
     return np.stack([h, s, v], axis=-1)
 
 
+def find_red_mask(
+    rgb: np.ndarray,
+    hue_center_deg: float = 2.31,
+    hue_tolerance_deg: float = 18.0,
+    min_saturation: float = 0.5,
+    min_value: float = 0.5,
+) -> np.ndarray:
+    """Return a boolean (H, W) mask of pixels matching the red threshold."""
+    hsv = rgb_to_hsv(rgb)
+    h, s, v = hsv[..., 0], hsv[..., 1], hsv[..., 2]
+    hue_dist = np.minimum(np.abs(h - hue_center_deg), 360.0 - np.abs(h - hue_center_deg))
+    return (hue_dist <= hue_tolerance_deg) & (s >= min_saturation) & (v >= min_value)
+
+
 def find_red_centroid(
     rgb: np.ndarray,
     hue_center_deg: float = 2.31,
@@ -33,10 +47,13 @@ def find_red_centroid(
     """Return (u, v) pixel centroid of red-thresholded pixels, or None if
     fewer than min_pixel_count pixels match (signal clean failure -- never
     raises, never returns a degenerate/garbage centroid)."""
-    hsv = rgb_to_hsv(rgb)
-    h, s, v = hsv[..., 0], hsv[..., 1], hsv[..., 2]
-    hue_dist = np.minimum(np.abs(h - hue_center_deg), 360.0 - np.abs(h - hue_center_deg))
-    mask = (hue_dist <= hue_tolerance_deg) & (s >= min_saturation) & (v >= min_value)
+    mask = find_red_mask(
+        rgb,
+        hue_center_deg=hue_center_deg,
+        hue_tolerance_deg=hue_tolerance_deg,
+        min_saturation=min_saturation,
+        min_value=min_value,
+    )
 
     ys, xs = np.nonzero(mask)
     if xs.size < min_pixel_count:

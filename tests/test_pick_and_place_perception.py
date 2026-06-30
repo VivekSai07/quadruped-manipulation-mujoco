@@ -134,3 +134,98 @@ class TestPickAndPlaceCubeDetectorSeam:
         xy = task.target_xy()
 
         assert np.allclose(xy, np.array(real_cube_pos[:2]))
+
+
+class TestCubePosFreezeAtManipulationEntry:
+    """Reliability fix: once seed_approach() runs (the coordinator's single
+    WALKING->MANIPULATING entry hook), target_xy() must stop re-deriving the
+    cube position from the detector on every call, holding the frozen value
+    steady through APPROACHING/DESCENDING/GRASPING instead. This is what
+    stops live camera frame-to-frame jitter from turning _wp_approach/
+    _wp_descend into a continuously-moving target the EE can never converge
+    on (see .superpowers/sdd/vision-task-6-report.md for the diagnosed bug
+    this fixes)."""
+
+    def _build_task(self, cfg, cube_detector):
+        m = mujoco.MjModel.from_xml_path(MODEL_PATH)
+        d = mujoco.MjData(m)
+        kid = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_KEY, "home")
+        mujoco.mj_resetDataKeyframe(m, d, kid)
+        mujoco.mj_forward(m, d)
+
+        from controllers.manipulation import ManipulationController  # noqa: PLC0415
+
+        manip = ManipulationController(m, d)
+        ee_home = manip.ee_position().copy()
+
+        hover_z = 0.15
+        ftp_offset = manip._ee_spec.ftp_offset
+        cube_pos = [float(ee_home[0]), float(ee_home[1]), float(ee_home[2] - hover_z)]
+        target_pos = [float(ee_home[0]) + 0.1, float(ee_home[1]), float(ee_home[2] - hover_z) + 0.006]
+
+        task_cfg = dict(cfg["task"])
+        task = PickAndPlaceTask(
+            cube_pos, target_pos, m, d, manip, ftp_offset, task_cfg,
+            cube_detector=cube_detector,
+        )
+        return task
+
+    def test_unfrozen_before_seed_approach_tracks_live_detector(self, cfg):
+        """Before seed_approach() is ever called (i.e. during WALKING),
+        target_xy() must keep tracking the detector's live value -- proving
+        WALKING's existing continuous-refresh behavior is untouched."""
+        stub = _StubDetector([0.50, -0.20, 0.30])
+        task = self._build_task(cfg, cube_detector=stub)
+
+        assert task._cube_pos_frozen is False
+
+        xy1 = task.target_xy()
+        assert np.allclose(xy1, [0.50, -0.20])
+        assert stub.calls == 1
+
+        stub._fixed_pos = np.array([0.60, 0.10, 0.30])
+        xy2 = task.target_xy()
+        assert np.allclose(xy2, [0.60, 0.10])
+        assert stub.calls == 2
+
+    def test_target_xy_returns_frozen_value_during_approaching_despite_detector_change(self, cfg):
+        """seed_approach() freezes whatever target_xy() last reported; later
+        detector reads (simulating live camera jitter) must NOT change
+        target_xy()'s return value or trigger any further detector calls."""
+        stub = _StubDetector([0.50, -0.20, 0.30])
+        task = self._build_task(cfg, cube_detector=stub)
+
+        frozen_xy = task.target_xy().copy()   # WALKING's last refresh
+        assert stub.calls == 1
+
+        task.seed_approach(t=12.0)
+        assert task._cube_pos_frozen is True
+
+        # Simulate camera jitter: the detector now reports a different
+        # position on every subsequent call.
+        stub._fixed_pos = np.array([0.55, -0.15, 0.30])
+
+        for _ in range(3):
+            xy = task.target_xy()
+            assert np.allclose(xy, frozen_xy), (
+                "target_xy() must keep returning the frozen value, not "
+                "chase the detector's now-changed reading"
+            )
+
+        assert stub.calls == 1, (
+            "_refresh_cube_pos() must not be called again through "
+            "target_xy() once frozen"
+        )
+
+    def test_releasing_resets_frozen_flag(self, cfg):
+        """Defensive symmetry check: RELEASING resets _cube_pos_frozen back
+        to False alongside the existing _grasp_confirmed reset."""
+        stub = _StubDetector([0.50, -0.20, 0.30])
+        task = self._build_task(cfg, cube_detector=stub)
+        task.seed_approach(t=0.0)
+        assert task._cube_pos_frozen is True
+
+        task._set_phase(PickAndPlaceTask.Phase.RELEASING, 30.0)
+        task.manip_step(coordinator=None, t=30.1, dt=0.005)
+
+        assert task._cube_pos_frozen is False

@@ -173,16 +173,28 @@ class TestGracefulFallbackOnDetectionFailure:
         never_match_cfg = CubeDetectorConfig(hue_center_deg=180.0, hue_tolerance_deg=5.0)
         detector = CubeDetector(m, never_match_cfg)
         try:
-            from controllers.manipulation import ManipulationController
-
-            manip = ManipulationController(m, d)
-            ftp_offset = manip._ee_spec.ftp_offset
+            # Build the coordinator FIRST so coord.manip is the one, real
+            # ManipulationController the simulation will actually drive --
+            # then build the task using THAT instance and install it as
+            # coord._active_task. Constructing a separate ManipulationController
+            # and handing it to a pre-built task, then passing that task into
+            # TaskCoordinator(..., task=task), creates a SECOND, disconnected
+            # manip instance (TaskCoordinator.__init__ unconditionally builds
+            # its own at controllers/coordinator.py:89, regardless of the task=
+            # kwarg) -- coord.step() only ever calls compute() on its own
+            # instance, so a task built from a separately-constructed manip
+            # never has its motion commands actually applied to the
+            # simulation. This is the exact footgun tasks/reach_task.py's
+            # TaskFactory docstring documents; mirrors ReachTask.__init__'s
+            # own safe construction order instead.
+            coord = TaskCoordinator(m, d, stale_cfg)
             task = PickAndPlaceTask(
                 stale_cfg["task"]["cube_pos"],
                 stale_cfg["task"]["target_pos"],
-                m, d, manip, ftp_offset, stale_cfg["task"],
+                m, d, coord.manip, coord._ftp, stale_cfg["task"],
                 cube_detector=detector,
             )
+            coord._active_task = task
 
             # Should not raise/hang, and should fall back to ground truth
             # (the cube's true relocated position), not the stale config nor
@@ -196,7 +208,6 @@ class TestGracefulFallbackOnDetectionFailure:
 
             # Drive a handful of coordinator steps to confirm no hang/crash
             # across repeated detect()-fails-every-step calls.
-            coord = TaskCoordinator(m, d, stale_cfg, task=task)
             dt = m.opt.timestep
             for _ in range(200):
                 coord.step(d.time, dt)
@@ -211,46 +222,54 @@ class TestGracefulFallbackOnDetectionFailure:
 
 
 class TestFullPipelineGraspUnderPerceptionGuidance:
-    """Part 2 (best-effort, exploratory): does the FULL pick-and-place
-    pipeline (WALKING -> APPROACHING -> DESCENDING -> GRASPING -> ... ->
-    RELEASING) actually grasp and place successfully when guided by
-    perception, with the cube's true position differing from a stale config
-    seed?
+    """Part 2: does the FULL pick-and-place pipeline (WALKING ->
+    APPROACHING -> DESCENDING -> GRASPING -> ... -> RELEASING) actually
+    grasp and place successfully when guided by perception, with the
+    cube's true position differing from a stale config seed?
 
-    IMPORTANT FINDING (controller's investigation, not the detector's
-    accuracy): the original draft of this test used TRUE_CUBE_POS
-    ([1.4, -0.28, 0.325], Part 1's convergence-test position) for the full
-    pipeline run too, and it got permanently stuck in TRANSPORTING --
-    confirmed, by directly reproducing the same stall with perception fully
-    DISABLED (pure ground truth), to be a pre-existing reachability
-    limitation unrelated to perception: from the base stance the Go2 takes
-    to reach that far off-axis pickup point, the arm cannot also comfortably
-    reach the FIXED placement target ([1.6, 0.20, 0.331], independent of
-    cube_pos). This is a known limitation of the underlying task framework's
-    off-axis support (only WALKING-heading convergence to an off-axis cube
-    was previously tested, e.g. tests/test_task.py's
-    TestWalkingTurnsTowardOffAxisCube -- never a full grasp-to-place cycle
-    from a heavily off-axis base stance) -- NOT a new bug introduced by this
-    branch, and out of scope to fix here.
+    CORRECTED FINDING: an earlier version of this test (and this class's
+    own original construction code) built a standalone ManipulationController,
+    handed it to a PickAndPlaceTask, and then passed that task into
+    TaskCoordinator(..., task=task) -- but TaskCoordinator.__init__
+    unconditionally builds its OWN ManipulationController regardless of the
+    task= kwarg (controllers/coordinator.py:89), so coord.step()'s
+    self.manip.compute() call (which writes data.ctrl every step) was
+    operating on a manip instance the task's manip_step()/
+    reach_position_smooth() calls never touched. The task's own manip
+    computed a continuously-growing, never-applied joint target while the
+    real simulated arm just sat at its home pose -- this produced an
+    apparent "the cube never gets grasped, zero displacement" result that
+    looked exactly like a perception/jitter convergence failure but was
+    actually a test-construction bug. tasks/reach_task.py's TaskFactory
+    docstring already documents this exact footgun. The earlier "pre-
+    existing reachability limitation" note below (about
+    [1.4, -0.28, 0.325]) is unaffected by this -- that finding came from
+    directly reproducing the stall via the real `scripts/run_simulation.py`
+    CLI path (which constructs things safely), not via this broken pattern,
+    so it remains a genuine, separate, confirmed limitation.
 
-    This test instead uses a milder, independently-validated off-axis
-    position (FULL_CYCLE_TRUE_CUBE_POS below) that keeps the same X as the
-    stale config seed (only Y differs), confirmed via direct CLI runs to
-    complete the full grasp-to-place cycle successfully with ground truth
-    (`python scripts/run_simulation.py --no-viewer --cube-pos 1.6 -0.15
-    0.325` -> SUCCESS at t=35.93s). It is still far enough from the stale
-    config value (15cm in Y) to unambiguously exercise perception rather
-    than a stale seed.
+    This test now constructs the coordinator first (so coord.manip is the
+    one, real, simulated ManipulationController) and builds the task from
+    that shared instance -- mirroring ReachTask.__init__'s safe order.
+    Re-running the full pipeline this way confirms the production code was
+    already correct: `python scripts/run_simulation.py --config
+    configs/vision_demo.yaml --no-viewer --cube-pos 1.6 -0.15 0.325` (the
+    real CLI path, perception enabled) succeeds at t=35.99s -- essentially
+    identical timing to the ground-truth-only run (t=35.93s). is_success()
+    is now hard-asserted rather than best-effort-printed, since the prior
+    justification for soft-asserting (suspected unreliability under live
+    perception) no longer holds.
 
-    The detector's documented ~17-19mm systematic accuracy limit (see
-    perception/cube_detector.py's module docstring and
-    .superpowers/sdd/vision-task-3-report.md) could still affect full-cycle
-    reliability independent of the reachability issue above. This test
-    remains best-effort: it asserts the run completes (doesn't hang/crash)
-    within a generous step budget; is_success() is printed and reported in
-    .superpowers/sdd/vision-task-6-report.md honestly, not hard-asserted,
-    per the brief's explicit instruction not to treat a perception-driven
-    accuracy shortfall as a phase failure.
+    The far off-axis position [1.4, -0.28, 0.325] (Part 1's convergence-test
+    position) is a separate, confirmed, pre-existing limitation: from the
+    base stance the Go2 takes to reach that far off-axis pickup point, the
+    arm cannot also comfortably reach the FIXED placement target
+    ([1.6, 0.20, 0.331], independent of cube_pos) -- reproduced via the real
+    CLI path with perception fully DISABLED (pure ground truth), so it is
+    unrelated to perception and out of scope to fix here. This test uses a
+    milder off-axis position (FULL_CYCLE_TRUE_CUBE_POS below) that keeps the
+    same X as the stale config seed (only Y differs, 15cm -- still far
+    enough to unambiguously exercise perception rather than a stale seed).
     """
 
     FULL_CYCLE_TRUE_CUBE_POS = [1.6, -0.15, 0.325]
@@ -265,17 +284,20 @@ class TestFullPipelineGraspUnderPerceptionGuidance:
 
         detector = CubeDetector(m, CubeDetectorConfig.from_dict(stale_cfg["perception"]))
         try:
-            from controllers.manipulation import ManipulationController
-
-            manip = ManipulationController(m, d)
-            ftp_offset = manip._ee_spec.ftp_offset
+            # Coordinator first -- coord.manip is the one real, simulated
+            # ManipulationController (see class docstring for why a
+            # separately-constructed manip handed to a pre-built task is a
+            # documented footgun: TaskCoordinator.__init__ always builds its
+            # own, so coord.step()'s compute() would silently never touch
+            # the task's actual motion commands).
+            coord = TaskCoordinator(m, d, stale_cfg)
             task = PickAndPlaceTask(
                 stale_cfg["task"]["cube_pos"],
                 stale_cfg["task"]["target_pos"],
-                m, d, manip, ftp_offset, stale_cfg["task"],
+                m, d, coord.manip, coord._ftp, stale_cfg["task"],
                 cube_detector=detector,
             )
-            coord = TaskCoordinator(m, d, stale_cfg, task=task)
+            coord._active_task = task
 
             dt = m.opt.timestep
             max_t = float(stale_cfg["simulation"]["max_duration"])
@@ -303,11 +325,14 @@ class TestFullPipelineGraspUnderPerceptionGuidance:
                 f"sim_time={d.time:.2f}s"
             )
 
-            # Best-effort: the run must complete without hanging/crashing and
-            # must reach a determinate manipulation outcome (either it
-            # finished manipulating, or ran out of the generous step budget
-            # without an exception) -- this is the only hard assertion. The
-            # actual grasp success/failure is reported, not gated on.
             assert d.time <= max_t + dt, "simulation should not run past max_duration"
+            assert reached_returning_home, (
+                "full pipeline should complete manipulation and hand off to "
+                "RETURNING_HOME well within the step budget"
+            )
+            assert success, (
+                f"grasp-to-place cycle should succeed under live perception "
+                f"guidance (placement_err={placement_err_m:.4f}m)"
+            )
         finally:
             detector.close()

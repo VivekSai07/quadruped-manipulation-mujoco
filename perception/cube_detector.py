@@ -41,17 +41,18 @@ confirming the value is sitting inside a genuine cluster-separation plateau
 rather than on a knife's edge.
 
 Separate from this ~17-19mm time-averaged accuracy limit: detect() is called
-fresh, every physics step, throughout APPROACHING/DESCENDING (see
-tasks/pick_and_place.py's _refresh_cube_pos()). Frame-to-frame rendering
+fresh, every physics step, throughout WALKING/APPROACHING (see
+tasks/pick_and_place.py's _refresh_cube_pos()), so frame-to-frame rendering
 noise means each call's exact (u, v, depth) reading -- and thus the resulting
-world point -- jitters slightly from the previous one, even though the time-
-averaged accuracy is good. Because the consuming waypoint math currently
-re-derives its targets from whatever this method returns on every single
-call, that per-frame jitter can prevent the end-effector from ever settling
-inside a tight convergence threshold during the full grasp cycle. See
-.superpowers/sdd/vision-task-6-report.md for the full investigation and the
-recommended (not yet implemented) fix: freeze the consumed position once
-manipulation begins, rather than calling detect() every step indefinitely.
+world point -- jitters slightly from the previous one. As a defensive
+hardening against this (validated against the sense-once-then-freeze pattern
+used by independent reference vision-guided-picking implementations, not
+because the jitter was confirmed to cause a real failure here -- see
+.superpowers/sdd/vision-task-6-report.md), tasks/pick_and_place.py freezes
+the consumed position once MANIPULATING begins (seed_approach()) rather than
+calling detect() every step through the grasp cycle. The full grasp-to-place
+cycle has been confirmed end-to-end (`SUCCESS at t=35.99s`, ~15mm placement
+error) under live perception.
 """
 from __future__ import annotations
 

@@ -802,6 +802,45 @@ class TestNextTaskChainsTwoPickAndPlaceTasks:
         assert task_b.is_success(), "task_b's cube was not placed successfully"
 
 
+class TestCubePosFrozenIndependentAcrossChainedTasks:
+    """Reliability fix companion test: _cube_pos_frozen is a plain instance
+    attribute, so each chained PickAndPlaceTask (a fully separate __init__'d
+    instance -- see TestNextTaskChainsTwoPickAndPlaceTasks above and
+    controllers/coordinator.py's next_task() swap) must get its own
+    independent freeze state, never inheriting a stale True/False from a
+    previous task in the chain. Deliberately a fast, non-physics unit test
+    (no coordinator, no mj_step loop) rather than extending the ~130-140s
+    full-chain integration test above -- the mechanism here is just Python
+    attribute scoping, which doesn't need a real simulation run to verify."""
+
+    def test_each_chained_task_has_independent_freeze_state(self, cfg):
+        m = mujoco.MjModel.from_xml_path(MODEL_PATH)
+        d = mujoco.MjData(m)
+        kid = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_KEY, "home")
+        mujoco.mj_resetDataKeyframe(m, d, kid)
+        mujoco.mj_forward(m, d)
+
+        from controllers.manipulation import ManipulationController  # noqa: PLC0415
+
+        manip = ManipulationController(m, d)
+        ftp_offset = manip._ee_spec.ftp_offset
+        task_cfg = cfg["task"]
+
+        task_a = PickAndPlaceTask([1.6, 0.0, 0.325], [1.6, 0.20, 0.331], m, d, manip, ftp_offset, task_cfg)
+        task_b = PickAndPlaceTask([1.6, 0.20, 0.331], [1.6, -0.20, 0.325], m, d, manip, ftp_offset, task_cfg)
+
+        assert task_a._cube_pos_frozen is False
+        assert task_b._cube_pos_frozen is False
+
+        task_a.seed_approach(t=0.0)
+
+        assert task_a._cube_pos_frozen is True
+        assert task_b._cube_pos_frozen is False, (
+            "task_b's freeze state must be untouched by task_a's "
+            "seed_approach() -- no shared state across chained tasks"
+        )
+
+
 class TestRunSimulationTaskFactory:
     """Light, fast tests for scripts/run_simulation.py's config-driven task
     factory (Task 7) -- construction/type checks only, no full simulation

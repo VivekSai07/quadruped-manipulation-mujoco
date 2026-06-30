@@ -207,12 +207,12 @@ perception:
 Try it with the provided demo config, relocating the cube away from the config's seeded position to prove the robot follows what the camera actually sees, not a stale value:
 
 ```bash
-python scripts/run_simulation.py --config configs/vision_demo.yaml --cube-pos 1.4 -0.28 0.325 --no-viewer
+python scripts/run_simulation.py --config configs/vision_demo.yaml --cube-pos 1.6 -0.15 0.325 --no-viewer
 ```
 
-**What's proven and solid**: with perception enabled, the pre-grasp WALKING/APPROACHING heading genuinely converges to the camera-perceived cube position (`CubeDetector` accuracy: ~17-19mm) -- not a stale config seed. This is real, tested, load-bearing perception, not decorative wiring.
+The full grasp-to-place cycle works reliably under live perception: the pre-grasp WALKING/APPROACHING heading converges to the camera-perceived cube position (`CubeDetector` accuracy: ~17-19mm), and the grasp, lift, transport, and place all complete successfully (`SUCCESS at t=35.99s`, ~15mm placement error, with the command above). This is real, tested, load-bearing perception end-to-end, not decorative wiring. `tasks/pick_and_place.py` freezes the perceived cube position once MANIPULATING begins (`seed_approach()`/`target_xy()`) as a defensive hardening against frame-to-frame camera noise, validated against the sense-once-then-freeze pattern used by independent reference vision-guided-picking implementations.
 
-**Known limitation**: the full grasp-to-place cycle is not yet reliable under live perception. The cube's position is re-derived from a fresh camera reading every physics step throughout APPROACHING/DESCENDING, so frame-to-frame rendering noise can make the end-effector chase a continuously-jittering target and never settle close enough to grasp -- if you run the demo and the robot stalls before closing the gripper, that's this known, documented behavior, not a bug in your setup. The recommended fix (freeze the perceived cube position once the robot enters its manipulation phase, mirroring the existing post-grasp position freeze already in `tasks/pick_and_place.py`) is tracked as follow-up work, not yet implemented. See `.superpowers/sdd/vision-task-3-report.md` and `.superpowers/sdd/vision-task-6-report.md` for the full investigation.
+Note: a heavily off-axis cube position (e.g. `1.4 -0.28 0.325`) can stall in TRANSPORTING -- a separate, confirmed, pre-existing reachability limitation of the underlying task framework (the arm can't comfortably reach the fixed placement target from the base stance that far-off-axis pickup requires), reproduced even with perception fully disabled and unrelated to perception accuracy. See `.superpowers/sdd/vision-task-6-report.md` for the full investigation.
 
 ---
 

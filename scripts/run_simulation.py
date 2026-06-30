@@ -46,6 +46,7 @@ from tasks.reach_task import ReachTask
 
 if TYPE_CHECKING:
     from controllers.manipulation import ManipulationController
+    from perception.cube_detector import CubeDetector
 
 _ARM_STAMP_RE = re.compile(r"ARM_STAMP:\s*(\S+)")
 _EE_STAMP_RE = re.compile(r"END_EFFECTOR_STAMP:\s*(\S+)")
@@ -57,6 +58,7 @@ def _build_task(
     ftp_offset: float,
     model: mujoco.MjModel,
     data: mujoco.MjData,
+    cube_detector: "CubeDetector | None" = None,
 ) -> Task:
     """Construct a single Task from one task-config item (either the flat
     cfg["task"] dict, or one entry of cfg["task"]["sequence"]), dispatching
@@ -76,7 +78,10 @@ def _build_task(
     target_pos = task_item_cfg.get("target_pos", [1.6, 0.20, 0.331])
 
     if task_type == "pick_and_place":
-        return PickAndPlaceTask(cube_pos, target_pos, model, data, manip, ftp_offset, task_item_cfg)
+        return PickAndPlaceTask(
+            cube_pos, target_pos, model, data, manip, ftp_offset, task_item_cfg,
+            cube_detector=cube_detector,
+        )
     elif task_type == "reach_only":
         return ReachOnlyTask(cube_pos, model, data, manip, task_item_cfg)
     elif task_type == "push":
@@ -91,13 +96,19 @@ def _make_task_factory(model: mujoco.MjModel, data: mujoco.MjData, cfg: dict[str
     task_cfg = cfg.get("task", {})
     sequence = task_cfg.get("sequence")
 
+    perception_cfg = cfg.get("perception", {})
+    cube_detector = None
+    if perception_cfg.get("enabled", False):
+        from perception.cube_detector import CubeDetector, CubeDetectorConfig  # noqa: PLC0415
+        cube_detector = CubeDetector(model, CubeDetectorConfig.from_dict(perception_cfg))
+
     def factory(manip: "ManipulationController", ftp_offset: float, _task_cfg: dict[str, Any]) -> Task:
         if sequence:
-            items = [_build_task(item, manip, ftp_offset, model, data) for item in sequence]
+            items = [_build_task(item, manip, ftp_offset, model, data, cube_detector) for item in sequence]
             for a, b in zip(items, items[1:]):
                 a.set_next_task(b)
             return items[0]
-        return _build_task(task_cfg, manip, ftp_offset, model, data)
+        return _build_task(task_cfg, manip, ftp_offset, model, data, cube_detector)
 
     return factory
 
@@ -375,13 +386,15 @@ def main() -> int:
         print(f"Relocated cube to {args.cube_pos}")
 
     # Only pass a task_factory when the config actually opts into
-    # task-type selection or sequencing -- when task.type/task.sequence are
-    # both absent (today's default.yaml), task_factory stays None and
-    # ReachTask/TaskCoordinator take their original, unmodified default-
-    # construction path (a hardcoded PickAndPlaceTask), guaranteeing
+    # task-type selection, sequencing, or perception -- when task.type,
+    # task.sequence, and perception.enabled are all absent/false (today's
+    # default.yaml), task_factory stays None and ReachTask/TaskCoordinator
+    # take their original, unmodified default-construction path (a
+    # hardcoded PickAndPlaceTask), guaranteeing
     # byte-for-byte identical behavior to before this change.
     task_item_cfg = cfg.get("task", {})
-    if "type" in task_item_cfg or "sequence" in task_item_cfg:
+    perception_cfg = cfg.get("perception", {})
+    if "type" in task_item_cfg or "sequence" in task_item_cfg or perception_cfg.get("enabled", False):
         task_factory = _make_task_factory(model, data, cfg)
     else:
         task_factory = None

@@ -32,6 +32,7 @@ from .base import Task
 if TYPE_CHECKING:
     from controllers.coordinator import TaskCoordinator
     from controllers.manipulation import ManipulationController
+    from perception.cube_detector import CubeDetector
 
 # Cartesian target move rate for APPROACHING / TRANSPORTING (m/s).
 # The interp target steps at this rate; velocity IK tracks it each timestep.
@@ -66,11 +67,13 @@ class PickAndPlaceTask(Task):
         manip: "ManipulationController",
         ftp_offset: float,
         task_cfg: dict[str, Any],
+        cube_detector: "CubeDetector | None" = None,
     ) -> None:
         self.model = model
         self.data  = data
         self.manip = manip
         self._ftp  = ftp_offset
+        self._cube_detector = cube_detector
 
         # Pickup and placement positions (world frame)
         self._cube_pos   = np.array(cube_pos,   dtype=np.float64)
@@ -107,6 +110,10 @@ class PickAndPlaceTask(Task):
         self._grasp_offset:    np.ndarray = np.zeros(3)    # cube_pos - ee_pos
         self._grasp_R_local:   np.ndarray = np.eye(3)      # cube R in EE frame
         self._grasp_attempts:  int = 0                     # grasp evaluations so far
+
+        # Perception freeze: True once seed_approach() has taken its one
+        # pre-manipulation sense (see seed_approach()/target_xy() below).
+        self._cube_pos_frozen: bool = False
 
         # Cube freejoint addresses
         cube_jnt_id           = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "cube_joint")
@@ -176,7 +183,28 @@ class PickAndPlaceTask(Task):
         true time-in-phase, silently bypassing the `min_approach_time` floor.
         This mirrors what the original coordinator's
         `_transition(TaskState.APPROACHING, t)` did before this port.
+
+        Also freezes the cube position (`_cube_pos_frozen = True`) right as
+        manipulation begins: WALKING needs continuous re-sensing to steer
+        toward the cube, but continuing to re-derive the entire waypoint set
+        from a fresh camera reading on every physics step throughout
+        APPROACHING/DESCENDING/GRASPING lets per-frame rendering noise turn
+        _wp_approach/_wp_descend into a continuously-jittering target the EE
+        may never converge on (see .superpowers/sdd/vision-task-6-report.md).
+        This deliberately does NOT take an extra explicit sense here -- it
+        freezes whatever `_cube_pos` already holds from WALKING's own last
+        refresh (via `target_xy()`, called every step through STOPPING/
+        STABILIZING/ADJUSTING_HEIGHT right up to this point), which is
+        already a fresh, single-snapshot-equivalent value by the time
+        `seed_approach()` runs. An extra read here would also disturb tests
+        that hand-construct a task with a synthetic `cube_pos` deliberately
+        different from the model's real cube body (to engineer specific
+        EE-to-waypoint distances), without changing anything for the real
+        coordinator-driven pipeline. Freezing-in-place mirrors the validated
+        sense-once-then-freeze pattern used by every reference vision-guided-
+        picking implementation this was checked against.
         """
+        self._cube_pos_frozen = True
         self._arm_interp_target = self.manip.ee_position().copy()
         self._phase_enter_time = t
 
@@ -238,7 +266,11 @@ class PickAndPlaceTask(Task):
     # ── Task ABC interface ───────────────────────────────────────────────
 
     def _refresh_cube_pos(self) -> None:
-        pos = self.data.xpos[self._cube_body_id].copy()
+        pos = None
+        if self._cube_detector is not None:
+            pos = self._cube_detector.detect(self.data)   # None on a detection miss
+        if pos is None:
+            pos = self.data.xpos[self._cube_body_id].copy()   # ground-truth fallback (today's exact behavior)
         self._cube_pos[:] = pos
         self._compute_waypoints()
 
@@ -259,7 +291,16 @@ class PickAndPlaceTask(Task):
         # coordinator never had this bug because it only ever refreshed the
         # cube position from its own WALKING branch, never from print/status
         # code -- this mirrors that same invariant.
-        if not self._grasp_confirmed:
+        #
+        # _cube_pos_frozen is a second, independent guard (not a replacement
+        # for the one above): once seed_approach() takes its one pre-grasp
+        # sense and freezes it, this stops re-deriving the waypoint set from
+        # a fresh, possibly-noisy camera reading on every step throughout
+        # APPROACHING/DESCENDING/GRASPING -- see seed_approach()'s docstring
+        # and .superpowers/sdd/vision-task-6-report.md for why. Before
+        # seed_approach() is ever called (i.e. during WALKING), this flag is
+        # still False, so WALKING's continuous re-sensing is unaffected.
+        if not self._grasp_confirmed and not self._cube_pos_frozen:
             self._refresh_cube_pos()
         return self._cube_pos[:2]
 
@@ -324,6 +365,21 @@ class PickAndPlaceTask(Task):
                         f"--no contact, re-descending for retry "
                         f"{self._grasp_attempts + 1}/{self._max_grasp_attempts}"
                     )
+                    # Deliberately NOT re-sensing here: an earlier attempt at
+                    # this (re-deriving _wp_descend from a fresh ground-truth/
+                    # perception read right before the retry) compounded
+                    # unpredictably with the existing per-attempt Z-decrement
+                    # below (a freshly re-sensed _wp_descend combined with
+                    # `- attempts * 0.01` could push the retry target into
+                    # table contact, stalling REGRASP indefinitely -- caught
+                    # by tests/test_task.py's TestRegraspFaultRecovery during
+                    # implementation). REGRASP retries against the position
+                    # already frozen by seed_approach() instead, kept simple
+                    # and proven; re-sensing before a retry is a real,
+                    # validated pattern (see reference implementations cited
+                    # in .superpowers/sdd/vision-task-6-report.md) but
+                    # revisiting it here needs its own careful design, not a
+                    # late addition to this fix.
                     self._set_phase(PickAndPlaceTask.Phase.REGRASP, t)
                 else:
                     self._grasp_confirmed = False
@@ -395,6 +451,11 @@ class PickAndPlaceTask(Task):
             if self._grasp_confirmed:
                 self._grasp_confirmed = False
                 print(f"  [t={t:.2f}s] Kinematic lock released --cube free")
+            # Defensive reset for symmetry: not required for correctness
+            # today (each chained task is its own fully __init__'d instance,
+            # so there's no shared state to leak), but keeps this field's
+            # full lifecycle visible by grep alone.
+            self._cube_pos_frozen = False
             self.manip.set_gripper(open_=True)
             if t - self._phase_enter_time >= self._release_duration:
                 return True

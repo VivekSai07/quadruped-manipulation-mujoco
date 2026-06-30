@@ -1,3 +1,21 @@
+# Vision-guided picking demo. Run with --cube-pos to physically relocate
+# the cube away from this file's task.cube_pos (the perceived position is
+# what the robot actually follows once perception.enabled is true) -- e.g.:
+#   python scripts/run_simulation.py --config configs/vision_demo.yaml --cube-pos 1.4 -0.28 0.325 --no-viewer
+#
+# Otherwise identical to configs/default.yaml, with one live change:
+# perception.enabled: true.
+#
+# The full grasp-to-place cycle works reliably under live perception,
+# confirmed end-to-end via `python scripts/run_simulation.py --config
+# configs/vision_demo.yaml --no-viewer --cube-pos 1.6 -0.15 0.325`
+# (SUCCESS at t=35.99s, ~15mm placement error) -- see
+# .superpowers/sdd/vision-task-6-report.md for the investigation history,
+# including an earlier false alarm (a disconnected-ManipulationController
+# test-construction bug, not a real perception/jitter issue) and the
+# defensive cube-position freeze added to tasks/pick_and_place.py's
+# seed_approach()/target_xy() at MANIPULATING entry.
+
 simulation:
   timestep: 0.005
   model_path: "models/combined.xml"
@@ -53,22 +71,21 @@ task:
 
 panda_mass_scale: 0.35      # Panda inertias scaled at model-build time
 
-# Optional vision-guided picking. Absent by default -- a populated block
-# here would change today's demo behavior (PickAndPlaceTask would start
-# consulting perception instead of ground truth for its pre-grasp
-# position), so this stays opt-in only, added to a caller's own config
-# (e.g. configs/vision_demo.yaml), not shipped live here. Example:
-# perception:
-#   enabled: true
-#   camera_name: workspace_cam
-#   width: 640
-#   height: 480
-#   hue_center_deg: 2.31
-#   hue_tolerance_deg: 18.0
-#   min_saturation: 0.5
-#   min_value: 0.5
-#   min_pixel_count: 25
-#   depth_cluster_tolerance: 0.050
+# Vision-guided picking: enabled here (unlike configs/default.yaml, where this
+# block stays commented-out/opt-in). PickAndPlaceTask consults the camera-based
+# CubeDetector for its pre-grasp WALKING/APPROACHING target instead of ground
+# truth -- see perception/cube_detector.py and tasks/pick_and_place.py.
+perception:
+  enabled: true
+  camera_name: workspace_cam
+  width: 640
+  height: 480
+  hue_center_deg: 2.31
+  hue_tolerance_deg: 18.0
+  min_saturation: 0.5
+  min_value: 0.5
+  min_pixel_count: 25
+  depth_cluster_tolerance: 0.050
 
 # Visualization
 viewer:

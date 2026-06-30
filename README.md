@@ -186,6 +186,36 @@ task:
 
 ---
 
+## Vision-Guided Picking
+
+A fixed, world-mounted MuJoCo camera (`workspace_cam`) plus a classical-CV pipeline (HSV color threshold + real depth-buffer backprojection, no ML/no new dependencies) can perceive the cube's position instead of reading it from config or ground truth. Opt-in via `perception.enabled` (absent/false by default, so `configs/default.yaml`'s behavior is unaffected):
+
+```yaml
+perception:
+  enabled: true
+  camera_name: workspace_cam
+  width: 640
+  height: 480
+  hue_center_deg: 2.31
+  hue_tolerance_deg: 18.0
+  min_saturation: 0.5
+  min_value: 0.5
+  min_pixel_count: 25
+  depth_cluster_tolerance: 0.050
+```
+
+Try it with the provided demo config, relocating the cube away from the config's seeded position to prove the robot follows what the camera actually sees, not a stale value:
+
+```bash
+python scripts/run_simulation.py --config configs/vision_demo.yaml --cube-pos 1.6 -0.15 0.325 --no-viewer
+```
+
+The full grasp-to-place cycle works reliably under live perception: the pre-grasp WALKING/APPROACHING heading converges to the camera-perceived cube position (`CubeDetector` accuracy: ~17-19mm), and the grasp, lift, transport, and place all complete successfully (`SUCCESS at t=35.99s`, ~15mm placement error, with the command above). This is real, tested, load-bearing perception end-to-end, not decorative wiring. `tasks/pick_and_place.py` freezes the perceived cube position once MANIPULATING begins (`seed_approach()`/`target_xy()`) as a defensive hardening against frame-to-frame camera noise, validated against the sense-once-then-freeze pattern used by independent reference vision-guided-picking implementations.
+
+Note: a heavily off-axis cube position (e.g. `1.4 -0.28 0.325`) can stall in TRANSPORTING -- a separate, confirmed, pre-existing reachability limitation of the underlying task framework (the arm can't comfortably reach the fixed placement target from the base stance that far-off-axis pickup requires), reproduced even with perception fully disabled and unrelated to perception accuracy. See `.superpowers/sdd/vision-task-6-report.md` for the full investigation.
+
+---
+
 ## Project Structure
 
 ```

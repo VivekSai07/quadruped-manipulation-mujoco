@@ -50,6 +50,7 @@ if TYPE_CHECKING:
 
 _ARM_STAMP_RE = re.compile(r"ARM_STAMP:\s*(\S+)")
 _EE_STAMP_RE = re.compile(r"END_EFFECTOR_STAMP:\s*(\S+)")
+_SCENE_STAMP_RE = re.compile(r"SCENE_STAMP:\s*(\S+)")
 
 
 def _build_task(
@@ -134,18 +135,20 @@ def _describe_task(cfg: dict[str, Any]) -> str:
     return f"Unknown task type {task_type!r}"
 
 
-def _model_stamps(model_path: str) -> tuple[str | None, str | None]:
-    """Return the (arm, end_effector) names baked into models/combined.xml,
-    or (None, None) if the file is missing or has no stamp comments."""
+def _model_stamps(model_path: str) -> tuple[str | None, str | None, str | None]:
+    """Return the (arm, end_effector, scene) names baked into models/combined.xml,
+    or (None, None, None) if the file is missing or has no stamp comments."""
     path = Path(model_path)
     if not path.exists():
-        return None, None
+        return None, None, None
     text = path.read_text(encoding="utf-8")
     arm_match = _ARM_STAMP_RE.search(text)
     ee_match = _EE_STAMP_RE.search(text)
+    scene_match = _SCENE_STAMP_RE.search(text)
     return (
         arm_match.group(1) if arm_match else None,
         ee_match.group(1) if ee_match else None,
+        scene_match.group(1) if scene_match else None,
     )
 
 
@@ -172,6 +175,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--end-effector", choices=sorted(END_EFFECTORS), default=None,
                    help="End-effector to mount on the arm's wrist "
                         "(default: the chosen arm's default end-effector)")
+    p.add_argument("--scene", default="default",
+                   help="Visual scene preset: warehouse | lab | outdoor | cinematic | default "
+                        "(rebuilds combined.xml if the baked scene doesn't match)")
     p.add_argument("--cube-pos", type=float, nargs=3, default=None, metavar=("X", "Y", "Z"),
                    help="Override the cube's spawn position (relocates the physical cube "
                         "body, not just config -- the model XML hardcodes its default "
@@ -353,11 +359,20 @@ def main() -> int:
     # Rebuild model XML if explicitly requested, or if the cached model was
     # built for a different arm/end-effector combo (or doesn't exist / has
     # no stamps).
-    current_arm_stamp, current_ee_stamp = _model_stamps(model_path)
-    if args.build_model or current_arm_stamp != args.arm or current_ee_stamp != effective_ee:
-        print(f"Rebuilding model for arm '{args.arm}' + end-effector '{effective_ee}'...")
+    current_arm_stamp, current_ee_stamp, current_scene_stamp = _model_stamps(model_path)
+    need_rebuild = (
+        args.build_model
+        or current_arm_stamp != args.arm
+        or current_ee_stamp != effective_ee
+        or current_scene_stamp != args.scene
+    )
+    if need_rebuild:
+        print(
+            f"Rebuilding model for arm='{args.arm}' end-effector='{effective_ee}' "
+            f"scene='{args.scene}'..."
+        )
         from scripts.build_model import main as build_main  # noqa: PLC0415
-        build_main(arm=args.arm, end_effector=effective_ee)
+        build_main(arm=args.arm, end_effector=effective_ee, scene=args.scene)
 
     print(f"Loading model: {model_path}")
     try:

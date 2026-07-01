@@ -23,7 +23,128 @@ BASE_DIR = Path(__file__).parent.parent
 MODELS_DIR = BASE_DIR / "models"
 
 sys.path.insert(0, str(BASE_DIR))
-from controllers.arms import ArmSpec, DEFAULT_ARM, get_arm_spec, validate_combo  # noqa: E402
+
+# ── Scene visual presets ────────────────────────────────────────────────────
+# Each preset is a flat dict of named visual parameters.  The keys map 1-to-1
+# onto the XML attributes they replace in build_combined_xml().
+# "default" preserves the original bright studio look exactly.
+SCENE_PRESETS: dict[str, dict] = {
+    "default": {
+        "skybox_rgb1": ".45 .60 .80",
+        "skybox_rgb2": ".08 .10 .18",
+        "headlight_ambient": "0.35 0.35 0.38",
+        "headlight_diffuse": "0.7 0.7 0.7",
+        "haze": "0.18 0.22 0.30 1",
+        "fogstart": "8",
+        "fogend": "20",
+        "shadowscale": "0.6",
+        "sun_pos": "-1 -3 5",
+        "sun_dir": "0.15 0.5 -1",
+        "sun_diffuse": "0.80 0.78 0.72",
+        "sun_specular": "0.25 0.25 0.20",
+        "fill_pos": "3 2 4",
+        "fill_dir": "-0.4 -0.3 -1",
+        "fill_diffuse": "0.30 0.35 0.42",
+        "rim_pos": "-2 1 3",
+        "rim_dir": "0.5 -0.2 -1",
+        "rim_diffuse": "0.15 0.18 0.22",
+        "floor_rgb1": ".82 .82 .82",
+        "floor_rgb2": ".65 .65 .65",
+    },
+    "warehouse": {
+        # Industrial storage: warm sodium-vapor overhead, dark concrete, deep shadows.
+        "skybox_rgb1": "0.08 0.07 0.06",
+        "skybox_rgb2": "0.04 0.04 0.03",
+        "headlight_ambient": "0.08 0.07 0.06",
+        "headlight_diffuse": "0.25 0.22 0.18",
+        "haze": "0.20 0.18 0.14 1",
+        "fogstart": "6",
+        "fogend": "15",
+        "shadowscale": "0.30",
+        "sun_pos": "-1 -3 5",
+        "sun_dir": "0.15 0.5 -1",
+        "sun_diffuse": "0.85 0.70 0.45",
+        "sun_specular": "0.15 0.10 0.05",
+        "fill_pos": "3 2 4",
+        "fill_dir": "-0.4 -0.3 -1",
+        "fill_diffuse": "0.10 0.09 0.08",
+        "rim_pos": "-2 1 3",
+        "rim_dir": "0.5 -0.2 -1",
+        "rim_diffuse": "0.05 0.05 0.04",
+        "floor_rgb1": "0.30 0.28 0.25",
+        "floor_rgb2": "0.24 0.23 0.20",
+    },
+    "lab": {
+        # Research lab: cool fluorescent overhead, neutral gray floor, crisp controlled light.
+        "skybox_rgb1": "0.06 0.06 0.08",
+        "skybox_rgb2": "0.03 0.03 0.04",
+        "headlight_ambient": "0.18 0.20 0.24",
+        "headlight_diffuse": "0.40 0.42 0.50",
+        "haze": "0.08 0.10 0.14 1",
+        "fogstart": "12",
+        "fogend": "25",
+        "shadowscale": "0.45",
+        "sun_pos": "0 0 6",
+        "sun_dir": "0.05 0.1 -1",
+        "sun_diffuse": "0.72 0.76 0.88",
+        "sun_specular": "0.10 0.10 0.14",
+        "fill_pos": "3 2 4",
+        "fill_dir": "-0.4 -0.3 -1",
+        "fill_diffuse": "0.12 0.15 0.20",
+        "rim_pos": "-2 1 3",
+        "rim_dir": "0.5 -0.2 -1",
+        "rim_diffuse": "0.06 0.08 0.12",
+        "floor_rgb1": "0.54 0.54 0.56",
+        "floor_rgb2": "0.46 0.46 0.48",
+    },
+    "outdoor": {
+        # Golden hour: warm low sun, long crisp shadows, sky gradient, sandy ground.
+        "skybox_rgb1": "0.75 0.50 0.22",
+        "skybox_rgb2": "0.12 0.22 0.48",
+        "headlight_ambient": "0.10 0.09 0.07",
+        "headlight_diffuse": "0.12 0.10 0.08",
+        "haze": "0.32 0.25 0.16 1",
+        "fogstart": "10",
+        "fogend": "22",
+        "shadowscale": "0.20",
+        "sun_pos": "5 -8 4",
+        "sun_dir": "-0.3 0.7 -1",
+        "sun_diffuse": "0.98 0.75 0.38",
+        "sun_specular": "0.20 0.14 0.05",
+        "fill_pos": "-4 5 6",
+        "fill_dir": "0.3 -0.5 -1",
+        "fill_diffuse": "0.15 0.22 0.38",
+        "rim_pos": "-3 -2 3",
+        "rim_dir": "0.5 0.3 -1",
+        "rim_diffuse": "0.18 0.12 0.05",
+        "floor_rgb1": "0.65 0.58 0.42",
+        "floor_rgb2": "0.55 0.50 0.36",
+    },
+    "cinematic": {
+        # Dark studio: single strong key, near-black shadows, maximum contrast.
+        "skybox_rgb1": "0.03 0.04 0.06",
+        "skybox_rgb2": "0.01 0.01 0.02",
+        "headlight_ambient": "0.04 0.04 0.05",
+        "headlight_diffuse": "0.15 0.15 0.18",
+        "haze": "0.04 0.05 0.08 1",
+        "fogstart": "8",
+        "fogend": "18",
+        "shadowscale": "0.15",
+        "sun_pos": "-3 -5 6",
+        "sun_dir": "0.4 0.6 -1",
+        "sun_diffuse": "0.95 0.88 0.75",
+        "sun_specular": "0.25 0.20 0.15",
+        "fill_pos": "4 3 4",
+        "fill_dir": "-0.5 -0.4 -1",
+        "fill_diffuse": "0.06 0.10 0.18",
+        "rim_pos": "3 2 3",
+        "rim_dir": "-0.5 -0.3 -1",
+        "rim_diffuse": "0.08 0.14 0.22",
+        "floor_rgb1": "0.14 0.14 0.16",
+        "floor_rgb2": "0.10 0.10 0.12",
+    },
+}
+from controllers.arms import ARMS, ArmSpec, DEFAULT_ARM, get_arm_spec, validate_combo  # noqa: E402
 from controllers.end_effectors import (  # noqa: E402
     EndEffectorSpec,
     MountOverride,
@@ -844,7 +965,11 @@ def _workspace_camera_xml() -> str:
     )
 
 
-def build_combined_xml(arm: str = DEFAULT_ARM, end_effector: str | None = None) -> str:
+def build_combined_xml(
+    arm: str = DEFAULT_ARM,
+    end_effector: str | None = None,
+    scene: str = "default",
+) -> str:
     """Return the complete combined MJCF XML as a string."""
     arm_spec = get_arm_spec(arm)
     ee_name = end_effector or arm_spec.default_end_effector
@@ -854,9 +979,16 @@ def build_combined_xml(arm: str = DEFAULT_ARM, end_effector: str | None = None) 
     qpos_tail, ctrl_tail, keyframe_comment = _ee_keyframe(spec, arm_spec)
     home = _fmt(*arm_spec.home_pose)
 
+    if scene not in SCENE_PRESETS:
+        raise ValueError(
+            f"Unknown scene {scene!r}. Valid options: {sorted(SCENE_PRESETS)}"
+        )
+    sc = SCENE_PRESETS[scene]
+
     xml = f"""<mujoco model="go2_{arm_spec.name}">
   <!-- ARM_STAMP: {arm_spec.name} -->
   <!-- END_EFFECTOR_STAMP: {spec.name} -->
+  <!-- SCENE_STAMP: {scene} -->
   <!--
     Combined Unitree Go2 + {arm_spec.display_name} loco-manipulation model.
     Coordinate frame: X-forward, Y-left, Z-up (standard robotics).
@@ -875,9 +1007,9 @@ def build_combined_xml(arm: str = DEFAULT_ARM, end_effector: str | None = None) 
   <!-- ── Visual quality ──────────────────────────────────────────────── -->
   <visual>
     <quality shadowsize="4096" offsamples="8"/>
-    <headlight ambient="0.35 0.35 0.38" diffuse="0.7 0.7 0.7" specular="0.1 0.1 0.1"/>
-    <map shadowclip="2.0" shadowscale="0.6" fogstart="8" fogend="20"/>
-    <rgba haze="0.18 0.22 0.30 1"/>
+    <headlight ambient="{sc['headlight_ambient']}" diffuse="{sc['headlight_diffuse']}" specular="0.1 0.1 0.1"/>
+    <map shadowclip="2.0" shadowscale="{sc['shadowscale']}" fogstart="{sc['fogstart']}" fogend="{sc['fogend']}"/>
+    <rgba haze="{sc['haze']}"/>
     <global azimuth="160" elevation="-20" offwidth="1280" offheight="720"/>
   </visual>
 
@@ -925,13 +1057,13 @@ def build_combined_xml(arm: str = DEFAULT_ARM, end_effector: str | None = None) 
 
   <!-- ── Assets ──────────────────────────────────────────────────────── -->
   <asset>
-    <!-- Skybox: cool blue-to-dark gradient for a studio feel -->
+    <!-- Skybox: gradient set by --scene preset -->
     <texture name="skybox" type="skybox" builtin="gradient"
-             rgb1=".45 .60 .80" rgb2=".08 .10 .18" width="512" height="512"/>
+             rgb1="{sc['skybox_rgb1']}" rgb2="{sc['skybox_rgb2']}" width="512" height="512"/>
 
-    <!-- Floor: grey checker tile -->
+    <!-- Floor: checker tile, colours set by --scene preset -->
     <texture name="floor_tex" type="2d" builtin="checker"
-             rgb1=".82 .82 .82" rgb2=".65 .65 .65"
+             rgb1="{sc['floor_rgb1']}" rgb2="{sc['floor_rgb2']}"
              width="512" height="512" mark="cross" markrgb=".75 .75 .75"/>
     <material name="floor_mat" texture="floor_tex" texrepeat="6 6"
               reflectance="0.08" specular="0.1" shininess="0.1"/>
@@ -986,15 +1118,15 @@ def build_combined_xml(arm: str = DEFAULT_ARM, end_effector: str | None = None) 
 
   <!-- ── World ───────────────────────────────────────────────────────── -->
   <worldbody>
-    <!-- Key light: angled sun from front-left, casts shadows -->
-    <light name="sun" directional="true" pos="-1 -3 5" dir="0.15 0.5 -1"
-           diffuse="0.80 0.78 0.72" specular="0.25 0.25 0.20" castshadow="true"/>
-    <!-- Fill light: soft from right, no shadow -->
-    <light name="fill" directional="true" pos="3 2 4" dir="-0.4 -0.3 -1"
-           diffuse="0.30 0.35 0.42" specular="0.05 0.05 0.05" castshadow="false"/>
-    <!-- Rim light: subtle back-light to separate robot from background -->
-    <light name="rim" directional="true" pos="-2 1 3" dir="0.5 -0.2 -1"
-           diffuse="0.15 0.18 0.22" specular="0.0 0.0 0.0" castshadow="false"/>
+    <!-- Key light: position/colour set by --scene preset, casts shadows -->
+    <light name="sun" directional="true" pos="{sc['sun_pos']}" dir="{sc['sun_dir']}"
+           diffuse="{sc['sun_diffuse']}" specular="{sc['sun_specular']}" castshadow="true"/>
+    <!-- Fill light: soft fill, no shadow -->
+    <light name="fill" directional="true" pos="{sc['fill_pos']}" dir="{sc['fill_dir']}"
+           diffuse="{sc['fill_diffuse']}" specular="0.02 0.02 0.02" castshadow="false"/>
+    <!-- Rim light: edge separation, no shadow -->
+    <light name="rim" directional="true" pos="{sc['rim_pos']}" dir="{sc['rim_dir']}"
+           diffuse="{sc['rim_diffuse']}" specular="0.0 0.0 0.0" castshadow="false"/>
 
     <geom name="floor" type="plane" size="8 8 0.1" material="floor_mat"
           condim="3" friction="0.8 0.02 0.01"/>
@@ -1343,13 +1475,17 @@ def build_combined_xml(arm: str = DEFAULT_ARM, end_effector: str | None = None) 
     return xml
 
 
-def main(arm: str = DEFAULT_ARM, end_effector: str | None = None) -> None:
+def main(
+    arm: str = DEFAULT_ARM,
+    end_effector: str | None = None,
+    scene: str = "default",
+) -> None:
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
     out_path = MODELS_DIR / "combined.xml"
-    out_path.write_text(build_combined_xml(arm, end_effector), encoding="utf-8")
+    out_path.write_text(build_combined_xml(arm, end_effector, scene), encoding="utf-8")
     arm_spec = get_arm_spec(arm)
     ee_name = end_effector or arm_spec.default_end_effector
-    print(f"Written: {out_path}  (arm={arm}, end_effector={ee_name})")
+    print(f"Written: {out_path}  (arm={arm}, end_effector={ee_name}, scene={scene})")
     print("Verifying model loads...")
 
     import mujoco  # noqa: PLC0415
@@ -1367,4 +1503,21 @@ def main(arm: str = DEFAULT_ARM, end_effector: str | None = None) -> None:
 
 
 if __name__ == "__main__":
-    main()
+    import argparse
+
+    _SCENES = sorted(SCENE_PRESETS)
+    p = argparse.ArgumentParser(description="Build the combined Go2+arm MJCF model.")
+    p.add_argument(
+        "--arm", choices=sorted(ARMS), default=DEFAULT_ARM,
+        help=f"Arm to mount (default: {DEFAULT_ARM})",
+    )
+    p.add_argument(
+        "--end-effector", dest="end_effector", default=None,
+        help="End-effector override (default: arm's own default)",
+    )
+    p.add_argument(
+        "--scene", choices=_SCENES, default="default",
+        help=f"Visual scene preset: {_SCENES} (default: default)",
+    )
+    args = p.parse_args()
+    main(arm=args.arm, end_effector=args.end_effector, scene=args.scene)

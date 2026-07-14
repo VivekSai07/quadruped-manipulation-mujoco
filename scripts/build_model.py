@@ -875,10 +875,10 @@ def build_combined_xml(arm: str = DEFAULT_ARM, end_effector: str | None = None) 
   <!-- ── Visual quality ──────────────────────────────────────────────── -->
   <visual>
     <quality shadowsize="4096" offsamples="8"/>
-    <headlight ambient="0.35 0.35 0.38" diffuse="0.7 0.7 0.7" specular="0.1 0.1 0.1"/>
-    <map shadowclip="2.0" shadowscale="0.6" fogstart="8" fogend="20"/>
-    <rgba haze="0.18 0.22 0.30 1"/>
-    <global azimuth="160" elevation="-20" offwidth="1280" offheight="720"/>
+    <headlight ambient="0.15 0.15 0.15" diffuse="0.6 0.6 0.6"/>
+    <map shadowclip="2.0"/>
+    <rgba haze="0.15 0.25 0.35 1"/>
+    <global azimuth="120" elevation="-20" offwidth="1280" offheight="720"/>
   </visual>
 
   <!-- ── Default classes ─────────────────────────────────────────────── -->
@@ -927,12 +927,12 @@ def build_combined_xml(arm: str = DEFAULT_ARM, end_effector: str | None = None) 
   <asset>
     <!-- Skybox: cool blue-to-dark gradient for a studio feel -->
     <texture name="skybox" type="skybox" builtin="gradient"
-             rgb1=".45 .60 .80" rgb2=".08 .10 .18" width="512" height="512"/>
+             rgb1="0.3 0.5 0.7" rgb2="0 0 0" width="512" height="512"/>
 
     <!-- Floor: grey checker tile -->
     <texture name="floor_tex" type="2d" builtin="checker"
-             rgb1=".82 .82 .82" rgb2=".65 .65 .65"
-             width="512" height="512" mark="cross" markrgb=".75 .75 .75"/>
+             rgb1="0.55 0.65 0.75" rgb2="0.6 0.7 0.8"
+             width="512" height="512" mark="edge" markrgb="0.8 0.8 0.8"/>
     <material name="floor_mat" texture="floor_tex" texrepeat="6 6"
               reflectance="0.08" specular="0.1" shininess="0.1"/>
 
@@ -986,15 +986,15 @@ def build_combined_xml(arm: str = DEFAULT_ARM, end_effector: str | None = None) 
 
   <!-- ── World ───────────────────────────────────────────────────────── -->
   <worldbody>
-    <!-- Key light: angled sun from front-left, casts shadows -->
-    <light name="sun" directional="true" pos="-1 -3 5" dir="0.15 0.5 -1"
-           diffuse="0.80 0.78 0.72" specular="0.25 0.25 0.20" castshadow="true"/>
-    <!-- Fill light: soft from right, no shadow -->
-    <light name="fill" directional="true" pos="3 2 4" dir="-0.4 -0.3 -1"
-           diffuse="0.30 0.35 0.42" specular="0.05 0.05 0.05" castshadow="false"/>
-    <!-- Rim light: subtle back-light to separate robot from background -->
-    <light name="rim" directional="true" pos="-2 1 3" dir="0.5 -0.2 -1"
-           diffuse="0.15 0.18 0.22" specular="0.0 0.0 0.0" castshadow="false"/>
+    <!-- Corner lights: 4 directional lights for even illumination -->
+    <light name="corner_fl" directional="true" pos="1 -1 2" dir="-1 1 -2"
+           diffuse="0.2 0.2 0.2" ambient="0.05 0.05 0.05" castshadow="true"/>
+    <light name="corner_fr" directional="true" pos="-1 -1 2" dir="1 1 -2"
+           diffuse="0.2 0.2 0.2" ambient="0.05 0.05 0.05" castshadow="false"/>
+    <light name="corner_bl" directional="true" pos="1 1 2" dir="-1 -1 -2"
+           diffuse="0.2 0.2 0.2" ambient="0.05 0.05 0.05" castshadow="false"/>
+    <light name="corner_br" directional="true" pos="-1 1 2" dir="1 -1 -2"
+           diffuse="0.2 0.2 0.2" ambient="0.05 0.05 0.05" castshadow="false"/>
 
     <geom name="floor" type="plane" size="8 8 0.1" material="floor_mat"
           condim="3" friction="0.8 0.02 0.01"/>
